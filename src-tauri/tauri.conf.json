@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Borderline Launcher",
+  "version": "1.0.0",
+  "identifier": "com.borderlinerp.launcher",
+  "build": {
+    "beforeDevCommand": "bun run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "bun run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Borderline Launcher",
+        "width": 1100,
+        "height": 680,
+        "resizable": false,
+        "decorations": false,
+        "center": true,
+        "shadow": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVFMTBGQjgzQjJEQjI1NjkKUldScEpkdXlnL3NRN2tTaHVhVFh3WlR1dmlrK0RZNi9SaDUyeXVEUlhEUUQ0dS9zSjNIRW9lWlAK",
+      "endpoints": [
+        "https://github.com/Simomagy/borderline-launcher/releases/latest/download/latest.json"
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "msi",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

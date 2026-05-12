@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: borderline-launcher/src-tauri -> target
+
+      - name: Install frontend deps
+        working-directory: borderline-launcher
+        run: bun install
+
+      - name: Build Tauri app
+        working-directory: borderline-launcher
+        env:
+          BRIDGE_URL: ${{ secrets.BRIDGE_URL }}
+          BRIDGE_API_KEY: ${{ secrets.BRIDGE_API_KEY }}
+          STEAM_WEBAPI_KEY: ${{ secrets.STEAM_WEBAPI_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: bunx tauri build
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Borderline Launcher ${{ github.ref_name }}"
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            borderline-launcher/src-tauri/target/release/bundle/msi/*.msi
+            borderline-launcher/src-tauri/target/release/bundle/msi/*.msi.sig
+            borderline-launcher/src-tauri/target/release/bundle/updater/latest.json
