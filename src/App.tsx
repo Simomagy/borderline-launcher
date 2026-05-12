@@ -431,7 +431,11 @@ export default function App() {
               {/* pulsante GIOCA */}
               <div className="flex flex-col items-center gap-3" style={{ animation: "fade-up .55s ease .08s both" }}>
                 <button
-                  onClick={() => canPlay && invoke("launch_game")}
+                  onClick={async () => {
+                    if (!canPlay || !steamHex) return;
+                    try { await invoke("authorize_entry", { steamHex }); } catch { /* non bloccare il gioco se la chiamata fallisce */ }
+                    invoke("launch_game");
+                  }}
                   disabled={!canPlay}
                   className={`
                     western-border relative overflow-hidden

@@ -189,6 +189,33 @@ async fn check_player_access(steam_hex: String) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// POST /api/v1/authorize-entry — comunica al bridge che questo steam hex sta per connettersi.
+#[tauri::command]
+async fn authorize_entry(steam_hex: String) -> Result<String, String> {
+    let url = format!("{}/api/v1/authorize-entry", BRIDGE_URL);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .danger_accept_invalid_certs(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    client
+        .post(&url)
+        .header(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", BRIDGE_API_KEY))
+                .map_err(|e| e.to_string())?,
+        )
+        .header("steam", &steam_hex)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .text()
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// GET autenticata a pry-bridge. Il frontend passa solo l'endpoint (es. "/api/v1/health").
 #[tauri::command]
 async fn fetch_bridge(endpoint: String) -> Result<String, String> {
@@ -276,6 +303,7 @@ pub fn run() {
             get_steam_hex,
             get_steam_profile,
             check_player_access,
+            authorize_entry,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
