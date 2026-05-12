@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { check as checkUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { getVersion } from "@tauri-apps/api/app";
 
 interface HealthData {
   success: boolean;
@@ -106,11 +107,13 @@ export default function App() {
   const [initializing, setInitializing] = useState(true);
   const [initLabel, setInitLabel]       = useState("Verifica applicazioni");
   const initDone = useRef(false);
+  useEffect(() => { getVersion().then(setAppVersion).catch(() => {}); }, []);
   const [steamHex, setSteamHex]         = useState<string | null>(null);
   const [steamProfile, setSteamProfile] = useState<SteamProfile | null>(null);
   const [accessStatus, setAccessStatus] = useState<AccessStatus>("loading");
   const [banInfo, setBanInfo]           = useState<BanInfo | null>(null);
 
+  const [appVersion, setAppVersion] = useState("");
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [updateVersion, setUpdateVersion]     = useState("");
@@ -489,7 +492,7 @@ export default function App() {
         >
           {/* LEFT — meta + status */}
           <div className="flex items-center gap-3">
-            <span className="text-mono text-[8px] uppercase tracking-[.28em] text-white/20">v1.0.0</span>
+            <span className="text-mono text-[8px] uppercase tracking-[.28em] text-white/20">{appVersion ? `v${appVersion}` : ""}</span>
             <span className="text-white/12">·</span>
             <span className="text-mono text-[8px] text-white/16">© 2026 BorderlineRP</span>
             {serverStatus === "online" && !initializing && (
