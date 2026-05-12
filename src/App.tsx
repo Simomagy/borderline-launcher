@@ -80,7 +80,7 @@ function LoadingCenter({ label }: { label: string }) {
   return (
     <div className="flex flex-col items-center gap-5">
       <img
-        src="/images/logo_a.png" alt="BorderlineRP"
+        src="https://cdn.borderlinerp.com/f/logo_a_1K-mosqd6j9xt8cd5.png" alt="BorderlineRP"
         className="h-28 w-auto object-contain drop-shadow-[0_0_36px_rgba(214,138,60,.42)]"
         style={{ animation: "float 7s ease-in-out infinite" }}
         onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
@@ -313,7 +313,7 @@ export default function App() {
 
         {/* background */}
         <img
-          src="/images/banner.gif" alt="" aria-hidden
+          src="https://cdn.borderlinerp.com/f/banner-mosqd6hsgitgm8.gif" alt="" aria-hidden
           className="absolute inset-0 w-full h-full object-cover pointer-events-none"
           style={{ opacity: .68, filter: "sepia(.18) brightness(.72) contrast(1.04)" }}
         />
@@ -414,7 +414,7 @@ export default function App() {
               {/* logo + titolo */}
               <div className="flex flex-col items-center gap-1.5" style={{ animation: "fade-up .55s ease both" }}>
                 {/* <img
-                  src="/images/logo_a.png" alt="BorderlineRP"
+                  src="https://cdn.borderlinerp.com/f/logo_a_1K-mosqd6j9xt8cd5.png" alt="BorderlineRP"
                   className="h-[130px] w-auto object-contain drop-shadow-[0_0_48px_rgba(214,138,60,.40)]"
                   onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
                 /> */}

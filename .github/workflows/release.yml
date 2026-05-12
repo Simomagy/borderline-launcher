@@ -25,28 +25,28 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          cache-on-failure: true
 
       - name: Install frontend deps
         run: bun install
-
-      - name: Build Tauri app
         env:
+          CARGO_INCREMENTAL: "0"
+
+      - name: Build and release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRIDGE_URL: ${{ secrets.BRIDGE_URL }}
           BRIDGE_API_KEY: ${{ secrets.BRIDGE_API_KEY }}
           STEAM_WEBAPI_KEY: ${{ secrets.STEAM_WEBAPI_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: bunx tauri build
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+          CARGO_INCREMENTAL: "0"
         with:
-          name: "Borderline Launcher ${{ github.ref_name }}"
-          draft: false
+          tagName: ${{ github.ref_name }}
+          releaseName: "Borderline Launcher ${{ github.ref_name }}"
+          releaseBody: "Nuova versione disponibile."
+          releaseDraft: false
           prerelease: false
-          generate_release_notes: true
-          fail_on_unmatched_files: false
-          files: |
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/msi/*.msi.sig
-            src-tauri/target/release/bundle/updater/latest.json
+          includeUpdaterJson: true
+          tauriScript: bunx tauri
