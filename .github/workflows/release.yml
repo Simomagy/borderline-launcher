@@ -15,11 +15,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup PATH
+        run: |
+          echo "C:\Users\msstu\.bun\bin" >> $env:GITHUB_PATH
+          echo "C:\Users\msstu\.cargo\bin" >> $env:GITHUB_PATH
+        shell: pwsh
 
       - name: Load .env
         run: |
