@@ -23,7 +23,11 @@ jobs:
               if ($_ -match "^\s*([^#][^=]+)=(.*)$") {
                 $key = $matches[1].Trim()
                 $val = $matches[2].Trim()
-                echo "$key=$val" >> $env:GITHUB_ENV
+                # se il valore è un path a un file esistente, leggi il contenuto
+                if ((Test-Path $val -PathType Leaf) -and ($key -like "*KEY*")) {
+                  $val = Get-Content $val -Raw
+                }
+                "$key=$val" >> $env:GITHUB_ENV
               }
             }
           }
@@ -39,6 +43,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_INCREMENTAL: "0"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Borderline Launcher ${{ github.ref_name }}"
