@@ -17,8 +17,9 @@ jobs:
 
       - name: Load .env
         run: |
-          if (Test-Path ".env") {
-            Get-Content ".env" | ForEach-Object {
+          $envFile = "F:\actions-runner\.env"
+          if (Test-Path $envFile) {
+            Get-Content $envFile | ForEach-Object {
               if ($_ -match "^\s*([^#][^=]+)=(.*)$") {
                 $key = $matches[1].Trim()
                 $val = $matches[2].Trim()
