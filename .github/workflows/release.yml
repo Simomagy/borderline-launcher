@@ -17,8 +17,8 @@ jobs:
 
       - name: Setup PATH
         run: |
-          echo "C:\Users\msstu\.bun\bin" >> $env:GITHUB_PATH
-          echo "C:\Users\msstu\.cargo\bin" >> $env:GITHUB_PATH
+          $newPath = "C:\Users\msstu\.bun\bin;C:\Users\msstu\.cargo\bin;$env:PATH"
+          echo "PATH=$newPath" >> $env:GITHUB_ENV
         shell: pwsh
 
       - name: Load .env
