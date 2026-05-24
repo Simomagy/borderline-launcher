@@ -29,7 +29,9 @@ jobs:
         shell: pwsh
 
       - name: Install frontend deps
-        run: C:\Users\msstu\.bun\bin\bun.exe install
+        run: |
+          & 'C:\Users\msstu\.bun\bin\bun.exe' install
+        shell: pwsh
         env:
           CARGO_INCREMENTAL: "0"
 
