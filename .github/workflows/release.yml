@@ -29,9 +29,7 @@ jobs:
         shell: pwsh
 
       - name: Install frontend deps
-        run: |
-          & 'C:\Users\msstu\.bun\bin\bun.exe' install
-        shell: pwsh
+        run: bun install
         env:
           CARGO_INCREMENTAL: "0"
 
@@ -47,4 +45,4 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
-          tauriScript: C:\Users\msstu\.bun\bin\bunx.exe tauri
+          tauriScript: bunx tauri
