@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { PlayButton } from "./PlayButton";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { check as checkUpdate } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 
 interface HealthData {
@@ -112,6 +113,11 @@ export default function App() {
   const [steamProfile, setSteamProfile] = useState<SteamProfile | null>(null);
   const [accessStatus, setAccessStatus] = useState<AccessStatus>("loading");
   const [banInfo, setBanInfo]           = useState<BanInfo | null>(null);
+
+  const [showSplash, setShowSplash] = useState(true);
+  const [splashExiting, setSplashExiting] = useState(false);
+  const [showCloseModal, setShowCloseModal] = useState(false);
+  const [keepInBackground, setKeepInBackground] = useState(true);
 
   const [appVersion, setAppVersion] = useState("");
   const [updateAvailable, setUpdateAvailable] = useState(false);
@@ -245,6 +251,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const t = setTimeout(() => {
+      setSplashExiting(true);
+      setTimeout(() => setShowSplash(false), 600);
+    }, 1500);
+    return () => clearTimeout(t);
+  }, []);
+
+  const handleClose = useCallback(async () => {
+    setShowCloseModal(false);
+    if (keepInBackground) {
+      await win().hide();
+    } else {
+      await exit(0);
+    }
+  }, [keepInBackground]);
+
+  useEffect(() => {
     if (initializing) return;
     checkForUpdates();
     const h = setInterval(fetchHealth, 30_000);
@@ -274,11 +297,20 @@ export default function App() {
   // ── render ──────────────────────────────────────────────────────────────────
   return (
     <div
-      className="w-[1100px] h-[680px] flex flex-col overflow-hidden select-none"
+      className="relative w-[1100px] h-[680px] flex flex-col overflow-hidden select-none"
       style={{ background: "#060402" }}
       data-mood="frontier"
     >
       <style>{KEYFRAMES}</style>
+      {showSplash && <SplashScreen exiting={splashExiting} />}
+      {showCloseModal && (
+        <CloseModal
+          keepInBackground={keepInBackground}
+          onToggle={() => setKeepInBackground(v => !v)}
+          onConfirm={handleClose}
+          onCancel={() => setShowCloseModal(false)}
+        />
+      )}
 
       {/* ══ title bar ══ */}
       <header
@@ -303,7 +335,7 @@ export default function App() {
           )}
           <div className="flex items-center gap-0.5">
             <button onClick={() => win().minimize()} className="w-7 h-7 flex items-center justify-center text-white/25 hover:text-white/80 hover:bg-white/8 transition-colors text-[13px] font-thin cursor-pointer">―</button>
-            <button onClick={() => win().hide()}     className="w-7 h-7 flex items-center justify-center text-white/25 hover:text-blood-600 hover:bg-blood-600/20 transition-colors text-[11px] cursor-pointer">✕</button>
+            <button onClick={() => setShowCloseModal(true)} className="w-7 h-7 flex items-center justify-center text-white/25 hover:text-blood-600 hover:bg-blood-600/20 transition-colors text-[11px] cursor-pointer">✕</button>
           </div>
         </div>
       </header>
@@ -313,9 +345,9 @@ export default function App() {
 
         {/* background */}
         <img
-          src="https://cdn.borderlinerp.com/f/banner-mosqd6hsgitgm8.gif" alt="" aria-hidden
-          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-          style={{ opacity: .68, filter: "sepia(.18) brightness(.72) contrast(1.04)" }}
+          src="https://cdn.borderlinerp.com/f/banner-mosqd6hsqkzpdm.png" alt="" aria-hidden
+          className={`absolute inset-0 w-full h-full object-cover pointer-events-none`}
+          style={{ opacity: canPlay ? .68 : .30, filter: "sepia(.18) brightness(.72) contrast(1.04)" }}
         />
 
         {/* vignette — leggero al centro, scuro in alto e in basso */}
@@ -430,31 +462,15 @@ export default function App() {
 
               {/* pulsante GIOCA */}
               <div className="flex flex-col items-center gap-3" style={{ animation: "fade-up .55s ease .08s both" }}>
-                <button
+                <PlayButton
+                  canPlay={canPlay}
+                  label={playLabel()}
                   onClick={async () => {
                     if (!canPlay || !steamHex) return;
                     try { await invoke("authorize_entry", { steamHex }); } catch { /* non bloccare il gioco se la chiamata fallisce */ }
                     invoke("launch_game");
                   }}
-                  disabled={!canPlay}
-                  className={`
-                    western-border relative overflow-hidden
-                    w-[380px] py-6 text-display text-[40px] tracking-[.22em]
-                    transition-all duration-300
-                    ${canPlay
-                      ? "bg-linear-to-r from-gold-600 to-gold-400 text-ink-900 hover:scale-105 active:scale-[.96] cursor-pointer"
-                      : "bg-linear-to-r from-ink-900/85 to-ink-700/85  text-blood-600 cursor-not-allowed border border-white/6"}
-                  `}
-                  style={canPlay ? { animation: "glow-pulse 2.8s ease-in-out infinite" } : undefined}
-                >
-                  {canPlay && (
-                    <span className="absolute inset-0 overflow-hidden pointer-events-none">
-                      <span className="absolute inset-y-0 w-1/4"
-                        style={{ background: "linear-gradient(90deg,transparent,rgba(255,255,255,.14),transparent)", animation: "shimmer-x 2.6s ease-in-out infinite" }} />
-                    </span>
-                  )}
-                  <span className="relative uppercase">{canPlay ? "▶ " : ""}{playLabel()}</span>
-                </button>
+                />
 
                 {/* hint */}
                 <div className="h-4 flex items-center justify-center">
@@ -636,6 +652,101 @@ function UpdateModal({
   );
 }
 
+// ── SplashScreen ──────────────────────────────────────────────────────────────
+
+function SplashScreen({ exiting }: { exiting: boolean }) {
+  return (
+    <div
+      className="absolute inset-0 z-[100] flex items-center justify-center pointer-events-none"
+      style={{
+        background: "#060402",
+        transition: "opacity 0.6s ease",
+        opacity: exiting ? 0 : 1,
+      }}
+    >
+      <img
+        src="https://cdn.borderlinerp.com/f/logo_a_1K-mosqd6j9xt8cd5.png"
+        alt="BorderlineRP"
+        className="h-44 w-auto object-contain"
+        style={{
+          filter: "drop-shadow(0 0 56px rgba(214,138,60,.65))",
+          animation: "float 7s ease-in-out infinite",
+        }}
+        onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+      />
+    </div>
+  );
+}
+
+// ── CloseModal ────────────────────────────────────────────────────────────────
+
+function CloseModal({
+  keepInBackground,
+  onToggle,
+  onConfirm,
+  onCancel,
+}: {
+  keepInBackground: boolean;
+  onToggle: () => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      className="absolute inset-0 z-50 flex items-center justify-center"
+      style={{ background: "rgba(4,3,2,.88)", backdropFilter: "blur(10px)" }}
+    >
+      <div
+        className="flex flex-col gap-5 p-7 border border-white/12"
+        style={{ width: 420, background: "rgba(8,6,3,.96)", animation: "card-in .3s ease" }}
+      >
+        <div className="flex flex-col gap-1.5">
+          <span className="text-mono text-[8px] uppercase tracking-[.36em] text-blood-500/70">Chiusura Launcher</span>
+          <h2 className="text-display text-[32px] leading-none text-bone-50">Vuoi chiudere?</h2>
+        </div>
+
+        <div className="h-px bg-white/8" />
+
+        <p className="text-body text-[11px] text-bone-200/55 leading-relaxed">
+          {keepInBackground ? "Il launcher rimarrà in background." : "Chiudendo il launcher non potrai entrare nel server fino al suo riavvio."}
+        </p>
+
+        <div className="flex items-center justify-between py-1">
+          <span className="text-mono text-[10px] text-white/55 uppercase tracking-wider">Mantieni in background</span>
+          <button
+            onClick={onToggle}
+            className="relative w-10 h-5 flex-shrink-0 transition-colors cursor-pointer"
+            style={{
+              background: keepInBackground ? "rgba(201,161,74,.85)" : "rgba(255,255,255,.12)",
+              borderRadius: 9999,
+            }}
+          >
+            <span
+              className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all duration-200"
+              style={{ left: keepInBackground ? "calc(100% - 18px)" : 2 }}
+            />
+          </button>
+        </div>
+
+        <div className="flex items-center gap-3 pt-1">
+          <button
+            onClick={onConfirm}
+            className="flex-1 py-3.5 text-mono text-[10px] uppercase tracking-[.22em] text-ink-900 bg-gold-500 hover:bg-gold-400 transition-colors cursor-pointer"
+          >
+            {keepInBackground ? "Nascondi" : "Chiudi"}
+          </button>
+          <button
+            onClick={onCancel}
+            className="px-5 py-3.5 text-mono text-[8px] uppercase tracking-wider text-white/30 hover:text-white/55 border border-white/10 hover:border-white/22 transition-colors cursor-pointer"
+          >
+            Annulla
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── AccessChip (inline nella card top-right) ──────────────────────────────────
 
 function AccessChip({ status, ban }: { status: AccessStatus; ban: BanInfo | null }) {
@@ -654,8 +765,8 @@ function AccessChip({ status, ban }: { status: AccessStatus; ban: BanInfo | null
     return (
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center gap-1.5">
-          <Diamond cls="bg-blood-600" />
-          <span className="text-mono text-[8px] text-blood-400 uppercase tracking-wider">Non Allowlistato</span>
+          <Diamond cls="bg-blood-800" />
+          <span className="text-mono text-[8px] uppercase tracking-wider">Non hai la Whitelist</span>
         </div>
         <button onClick={() => openUrl("https://discord.borderlinerp.com")} className="text-mono text-[8px] text-gold-500/55 hover:text-gold-400 transition-colors cursor-pointer uppercase tracking-wider">→ Apri Discord</button>
       </div>

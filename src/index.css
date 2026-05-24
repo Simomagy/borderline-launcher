@@ -132,6 +132,16 @@
         100% 0 / var(--tooth-size) var(--tooth-size) repeat-y,
       linear-gradient(#000 0 0) center / calc(100% - var(--tooth-size)) calc(100% - var(--tooth-size)) no-repeat;
   }
+
+  .infinite-zoom {
+    animation: zoom 120s linear infinite;
+  }
+}
+
+@keyframes zoom {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+  100% { transform: scale(1); }
 }
 
 @utility hairline      { border: 1px solid color-mix(in oklab, var(--color-gold-500) 30%, transparent); }
