@@ -15,12 +15,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup PATH
-        run: |
-          $newPath = "C:\Users\msstu\.bun\bin;C:\Users\msstu\.cargo\bin;$env:PATH"
-          echo "PATH=$newPath" >> $env:GITHUB_ENV
-        shell: pwsh
-
       - name: Load .env
         run: |
           if (Test-Path ".env") {
@@ -35,7 +29,7 @@ jobs:
         shell: pwsh
 
       - name: Install frontend deps
-        run: bun install
+        run: C:\Users\msstu\.bun\bin\bun.exe install
         env:
           CARGO_INCREMENTAL: "0"
 
@@ -51,4 +45,4 @@ jobs:
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
-          tauriScript: bunx tauri
+          tauriScript: C:\Users\msstu\.bun\bin\bunx.exe tauri
