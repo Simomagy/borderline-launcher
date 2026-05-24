@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Borderline Launcher",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "identifier": "com.borderlinerp.launcher",
   "build": {
     "beforeDevCommand": "bun run dev",
@@ -27,7 +27,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVFMTBGQjgzQjJEQjI1NjkKUldScEpkdXlnL3NRN2tTaHVhVFh3WlR1dmlrK0RZNi9SaDUyeXVEUlhEUUQ0dS9zSjNIRW9lWlAK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY4Q0MxQ0U1MTJGMzQ0NUIKUldSYlJQTVM1UnpNYU9UdlBSK0l3QmI1QmxOYzNiZldPTDFDNzlaRDE3ams1eXVOa1JjbXYyZ1kK",
       "endpoints": [
         "https://github.com/Simomagy/borderline-launcher/releases/latest/download/latest.json"
       ]
