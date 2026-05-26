@@ -15,7 +15,7 @@ dist-ssr
 .env
 tauri.key
 tauri.key.pub
-release.bat
+release.ps1
 
 # Editor directories and files
 .vscode/*
