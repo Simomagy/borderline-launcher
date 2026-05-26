@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { PlayButton } from "./PlayButton";
+import LivingBackground from "./LivingBackground";
+import { Poster, PaperHeader, PaperRule, Star, InkStamp, INK, PAPER_NOISE } from "./western";
+import { Copy, Check, Download } from "lucide-react";
+import { motion } from "motion/react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -21,6 +25,9 @@ type ServerStatus  = "loading" | "online" | "offline";
 type AccessStatus  = "loading" | "allowed" | "not_allowlisted" | "banned" | "error" | "unknown";
 
 const win = () => getCurrentWindow();
+
+// Addon vocale YACA (backend TeamSpeak) per Borderline
+const YACA_ADDON_URL = "https://yaca.systems/download/boderlinedev";
 
 const WESTERN_MESSAGES = [
   "Contando i fagioli", "Oliando i revolver", "Sellando il cavallo",
@@ -43,6 +50,11 @@ const KEYFRAMES = `
     0%,100%{ box-shadow: 0 0 0 1px rgba(201,161,74,.25); }
     50%    { box-shadow: 0 0 18px rgba(201,161,74,.28), 0 0 0 1px rgba(201,161,74,.50); }
   }
+  @keyframes ink-stamp  { 0%{transform:rotate(var(--stamp-rot,-7deg)) scale(1.6);opacity:0} 60%{transform:rotate(var(--stamp-rot,-7deg)) scale(.94);opacity:.92} 100%{transform:rotate(var(--stamp-rot,-7deg)) scale(1);opacity:.88} }
+  @keyframes paper-sway { 0%,100%{transform:rotate(-1.2deg)} 50%{transform:rotate(.8deg)} }
+  @keyframes emporio-sweep { 0%{transform:translateX(-100%)} 100%{transform:translateX(420%)} }
+  .emporio-shine { left: 0; opacity: 0; transform: translateX(-100%); }
+  .emporio-btn:hover .emporio-shine { opacity: 1; animation: emporio-sweep 1.5s linear infinite; }
 `;
 
 // ── primitivi ─────────────────────────────────────────────────────────────────
@@ -51,16 +63,46 @@ function Diamond({ cls = "" }: { cls?: string }) {
   return <span className={`block w-1.5 h-1.5 rotate-45 flex-shrink-0 ${cls}`} />;
 }
 
-function Pip({ status }: { status: ServerStatus }) {
-  if (status === "online")
-    return (
-      <span className="relative flex h-1.5 w-1.5 flex-shrink-0">
-        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-moss-500 opacity-60" />
-        <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-moss-500" />
-      </span>
-    );
-  if (status === "offline") return <span className="h-1.5 w-1.5 rounded-full bg-blood-600 flex-shrink-0" />;
-  return <span className="h-1.5 w-1.5 rounded-full bg-white/20 animate-pulse flex-shrink-0" />;
+// ── titolo animato — onda + bagliore dorato che viaggia, loop infinito ──────────
+
+const TITLE_TEXT = "Borderline";
+const TITLE_DARK = "0 4px 24px rgba(0,0,0,.95)";
+
+function AnimatedTitle() {
+  return (
+    <h1
+      aria-label={TITLE_TEXT}
+      className="text-display uppercase text-[60px] leading-[.9] inline-flex"
+      style={{ color: "#f3e2bd" }}
+    >
+      {TITLE_TEXT.split("").map((ch, i) => (
+        <motion.span
+          key={i}
+          aria-hidden
+          className="inline-block"
+          style={{ willChange: "transform" }}
+          animate={{
+            y: [0, -9, 0],
+            color: ["#f3e2bd", "#efbe85", "#f3e2bd"],
+            textShadow: [
+              `${TITLE_DARK}, 0 0 0px rgba(230,164,92,0)`,
+              `${TITLE_DARK}, 0 0 22px rgba(230,164,92,.75)`,
+              `${TITLE_DARK}, 0 0 0px rgba(230,164,92,0)`,
+            ],
+          }}
+          transition={{
+            duration: 2.6,
+            ease: "easeInOut",
+            repeat: Infinity,
+            repeatDelay: 0.6,
+            delay: i * 0.14,
+          }}
+        >
+          {ch}
+        </motion.span>
+      ))}
+    </h1>
+  );
 }
 
 // ── loading center ─────────────────────────────────────────────────────────────
@@ -101,10 +143,12 @@ function LoadingCenter({ label }: { label: string }) {
 export default function App() {
   const [serverStatus, setServerStatus] = useState<ServerStatus>("loading");
   const [players, setPlayers]           = useState(0);
+  const playersRef = useRef(0);
   const [uptime, setUptime]             = useState("--:--");
   const [discordRunning, setDiscordRunning] = useState(false);
   const [steamRunning,   setSteamRunning]   = useState(false);
   const [redmRunning,    setRedmRunning]    = useState(false);
+  const [teamspeakRunning, setTeamspeakRunning] = useState(false);
   const [initializing, setInitializing] = useState(true);
   const [initLabel, setInitLabel]       = useState("Verifica applicazioni");
   const initDone = useRef(false);
@@ -135,15 +179,31 @@ export default function App() {
       if (data.success && data.data?.status === "healthy") {
         setServerStatus("online");
         setPlayers(data.data.system.players);
+        playersRef.current = data.data.system.players;
         setUptime(data.data.uptime.slice(0, 5));
       } else { setServerStatus("offline"); }
     } catch { setServerStatus("offline"); }
   }, []);
 
+  // Heartbeat al bridge → conteggio aggregato → Discord Rich Presence.
+  // %players = giocatori in-game + launcher aperti (incluso questo).
+  const updatePresence = useCallback(async () => {
+    let total = playersRef.current;
+    try {
+      if (steamHex) {
+        const raw = await invoke<string>("launcher_heartbeat", { steamHex });
+        const r = JSON.parse(raw);
+        total = (r.players ?? playersRef.current) + (r.launchers ?? 0);
+      }
+    } catch { /* bridge irraggiungibile — usa il fallback in-game */ }
+    invoke("update_discord_presence", { players: total }).catch(() => { /* Discord non attivo */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [steamHex]);
+
   const checkProcesses = useCallback(async () => {
-    const { discord, steam, redm } = await invoke<{ discord: boolean; steam: boolean; redm: boolean }>("check_processes");
-    setDiscordRunning(discord); setSteamRunning(steam); setRedmRunning(redm);
-    return { discord, steam, redm };
+    const { discord, steam, redm, teamspeak } = await invoke<{ discord: boolean; steam: boolean; redm: boolean; teamspeak: boolean }>("check_processes");
+    setDiscordRunning(discord); setSteamRunning(steam); setRedmRunning(redm); setTeamspeakRunning(teamspeak);
+    return { discord, steam, redm, teamspeak };
   }, []);
 
   const recheckAccess = useCallback(async (hex: string | null) => {
@@ -172,8 +232,13 @@ export default function App() {
         setUpdateNotes(update.body ?? "");
         setUpdateAvailable(true);
         setShowUpdateModal(true);
+      } else {
+        console.info("[updater] nessun aggiornamento disponibile");
       }
-    } catch { /* endpoint non configurato o rete assente — silenzioso */ }
+    } catch (e) {
+      // permessi mancanti, endpoint irraggiungibile, firma non valida, ecc.
+      console.error("[updater] check fallito:", e);
+    }
   }, []);
 
   const doUpdate = useCallback(async () => {
@@ -194,7 +259,10 @@ export default function App() {
         }
       });
       await relaunch();
-    } catch { setUpdatePhase("idle"); }
+    } catch (e) {
+      console.error("[updater] download/install fallito:", e);
+      setUpdatePhase("idle");
+    }
   }, []);
 
   const resolveIdentity = useCallback(async () => {
@@ -202,7 +270,7 @@ export default function App() {
     try {
       const info = await invoke<{ hex: string; id64: string }>("get_steam_hex");
       setSteamHex(info.hex);
-      setInitLabel("Recupero dati del pistolero");
+      setInitLabel("Recupero dati del pioniere");
       const [pr, ar] = await Promise.allSettled([
         invoke<string>("get_steam_profile", { id64: info.id64 }),
         invoke<string>("check_player_access", { steamHex: info.hex }),
@@ -270,13 +338,15 @@ export default function App() {
   useEffect(() => {
     if (initializing) return;
     checkForUpdates();
+    updatePresence();
     const h = setInterval(fetchHealth, 30_000);
     const p = setInterval(checkProcesses, 5_000);
     const a = setInterval(() => recheckAccess(steamHex), 30_000);
+    const d = setInterval(updatePresence, 30_000);
     let unlisten: (() => void) | undefined;
     listen("tauri://focus", () => recheckAccess(steamHex)).then(f => { unlisten = f; });
-    return () => { clearInterval(h); clearInterval(p); clearInterval(a); unlisten?.(); };
-  }, [initializing, fetchHealth, checkProcesses, recheckAccess, steamHex, checkForUpdates]);
+    return () => { clearInterval(h); clearInterval(p); clearInterval(a); clearInterval(d); unlisten?.(); };
+  }, [initializing, fetchHealth, checkProcesses, recheckAccess, steamHex, checkForUpdates, updatePresence]);
 
   const canPlay =
     !redmRunning &&
@@ -343,98 +413,102 @@ export default function App() {
       {/* ══ main ══ */}
       <div className="flex-1 relative overflow-hidden">
 
-        {/* background */}
-        <img
-          src="https://cdn.borderlinerp.com/f/banner-mosqd6hsqkzpdm.png" alt="" aria-hidden
-          className={`absolute inset-0 w-full h-full object-cover pointer-events-none`}
-          style={{ opacity: canPlay ? .68 : .30, filter: "sepia(.18) brightness(.72) contrast(1.04)" }}
-        />
+        {/* ── SFONDO VIVO — braci, fumo, raggio, parallax (sostituisce lo statico) ── */}
+        <LivingBackground centerDark={canPlay ? 0.42 : 0.6} />
 
-        {/* vignette — leggero al centro, scuro in alto e in basso */}
-        <div className="absolute inset-0 pointer-events-none" style={{
-          background: [
-            "linear-gradient(to bottom, rgba(4,3,2,.48) 0%, transparent 34%, transparent 50%, rgba(4,3,2,.96) 100%)",
-            "radial-gradient(ellipse 75% 65% at 50% 42%, transparent 0%, rgba(4,3,2,.18) 70%, rgba(4,3,2,.52) 100%)",
-          ].join(", "),
-        }} />
+        {/* ── TOP-LEFT — bollettino del territorio (server + apps) ── */}
+        <div className="absolute top-4 left-5 z-20" style={{ animation: "card-in .4s ease both" }}>
+          <Poster width={212} pinned>
+            <PaperHeader no="Territorio di Borderline" title="Bollettino" />
 
-        {/* ── TOP-LEFT CARD — server + apps ── */}
-        <div
-          className="absolute top-3 left-4 z-20 flex flex-col gap-2.5 p-3.5 border border-white/8"
-          style={{
-            width: 200,
-            background: "rgba(4,3,2,.72)",
-            backdropFilter: "blur(18px)",
-            animation: "card-in .4s ease both",
-          }}
-        >
-          {/* server */}
-          <div className="flex items-center gap-2">
-            <Pip status={serverStatus} />
-            <div className="min-w-0">
-              <span className="text-mono text-[9px] uppercase tracking-widest text-bone-100/75">
-                {serverStatus === "online" ? "Online" : serverStatus === "offline" ? "Offline" : "Verifica…"}
-              </span>
-              {serverStatus === "online" && (
-                <span className="text-mono text-[8px] text-white/30 ml-1.5">{players} gioc · {uptime}</span>
-              )}
+            {/* stato del territorio — stella + timbro */}
+            <div className="flex flex-col items-center gap-1 mt-2.5 mb-1">
+              <Star size={26} style={{ color: serverStatus === "online" ? INK.green : serverStatus === "offline" ? INK.red : INK.soft }} />
+              <InkStamp
+                key={serverStatus}
+                color={serverStatus === "online" ? INK.green : serverStatus === "offline" ? INK.red : INK.soft}
+                size={26}
+              >
+                {serverStatus === "online" ? "APERTO" : serverStatus === "offline" ? "CHIUSO" : "VERIFICA…"}
+              </InkStamp>
             </div>
-          </div>
 
-          {/* separator */}
-          <div className="h-px bg-white/7" />
-
-          {/* apps */}
-          <div className="flex flex-col gap-1.5">
-            {[
-              { label: "Discord", running: discordRunning, cmd: "launch_discord" },
-              { label: "Steam",   running: steamRunning,   cmd: "launch_steam"   },
-            ].map(app => (
-              <div key={app.label} className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
-                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 transition-colors ${app.running ? "bg-moss-500" : "bg-blood-600/70"}`} />
-                  <span className="text-body text-[11px] text-bone-200/65">{app.label}</span>
+            {/* conteggio */}
+            {serverStatus === "online" ? (
+              <>
+                <p className="text-serif-sc text-center text-[12px] leading-snug mt-1.5" style={{ color: INK.text }}>
+                  <span className="text-display text-[18px]" style={{ color: INK.red }}>{players}</span> {players === 1 ? "pioniere" : "pionieri"} in città
+                </p>
+                <div className="text-mono text-[7px] text-center uppercase tracking-[.28em] mt-1.5" style={{ color: INK.faint }}>
+                  in sella da {uptime}
                 </div>
-                {app.running
-                  ? <span className="text-mono text-[8px] text-moss-500/55 uppercase tracking-wider">Attivo</span>
-                  : <button onClick={() => invoke(app.cmd)} className="text-mono text-[8px] uppercase tracking-wider text-gold-500/55 hover:text-gold-400 transition-colors cursor-pointer">Avvia →</button>
-                }
-              </div>
-            ))}
-          </div>
+              </>
+            ) : (
+              <p className="text-serif-sc text-center text-[11px] mt-1.5" style={{ color: INK.soft }}>
+                Nessun bollettino dal fronte
+              </p>
+            )}
+
+            <PaperRule double className="my-3" />
+
+            {/* applicazioni — checklist d'inchiostro */}
+            <div className="flex flex-col gap-1.5">
+              {[
+                { label: "Discord",   running: discordRunning,   action: () => invoke("launch_discord"), missing: "✗ avvia" },
+                { label: "Steam",     running: steamRunning,     action: () => invoke("launch_steam"),   missing: "✗ avvia" },
+                { label: "TeamSpeak", running: teamspeakRunning, action: () => openUrl(YACA_ADDON_URL),  missing: "✗ addon" },
+              ].map(app => (
+                <div key={app.label} className="flex items-center justify-between">
+                  <span className="text-serif-sc text-[12px] tracking-wide" style={{ color: INK.text }}>{app.label}</span>
+                  {app.running
+                    ? <span className="text-display text-[13px]" style={{ color: INK.green, transform: "rotate(-5deg)", display: "inline-block" }}>✓ pronto</span>
+                    : <button onClick={app.action} className="text-display text-[13px] cursor-pointer hover:opacity-70 transition-opacity" style={{ color: INK.red, transform: "rotate(-5deg)" }}>{app.missing}</button>
+                  }
+                </div>
+              ))}
+            </div>
+
+            {/* pulsante addon vocale — sempre raggiungibile */}
+            <button
+              onClick={() => openUrl(YACA_ADDON_URL)}
+              title="Scarica l'addon vocale YACA"
+              className="group mt-3 w-full flex items-center justify-center gap-2 py-2 cursor-pointer transition-all hover:-translate-y-px active:translate-y-0"
+              style={{ background: INK.red, color: "#f3e2bd", boxShadow: "0 3px 0 rgba(60,18,8,.55)" }}
+            >
+              <Download size={13} className="group-hover:translate-y-px transition-transform" />
+              <span className="text-display text-[13px] uppercase tracking-[.1em]">Addon vocale</span>
+            </button>
+          </Poster>
         </div>
 
-        {/* ── TOP-RIGHT CARD — profilo + accesso ── */}
-        <div
-          className="absolute top-3 right-4 z-20 flex flex-col gap-2.5 p-3.5 border border-white/8"
-          style={{
-            width: 195,
-            background: "rgba(4,3,2,.72)",
-            backdropFilter: "blur(18px)",
-            animation: "card-in .4s ease .05s both",
-          }}
-        >
-          {/* profilo Steam */}
-          {steamProfile ? (
-            <div className="flex items-center gap-2.5">
-              <img src={steamProfile.avatar} alt={steamProfile.name} className="w-8 h-8 object-cover border border-gold-700/30 flex-shrink-0" />
-              <div className="min-w-0">
-                <div className="text-body text-[12px] text-bone-100/85 truncate">{steamProfile.name}</div>
-                {steamHex && <div className="text-mono text-[7px] text-white/22 truncate mt-0.5">{steamHex.slice(0,6)}…{steamHex.slice(-4)}</div>}
+        {/* ── TOP-RIGHT — schedario del pioniere (profilo + accesso) ── */}
+        <div className="absolute top-4 right-5 z-20" style={{ animation: "card-in .4s ease .05s both" }}>
+          <Poster width={208} pinned>
+            <PaperHeader no="Schedario del Pioniere" title="Identità" />
+
+            {/* mugshot */}
+            {steamProfile ? (
+              <div className="flex items-center gap-3 mt-3">
+                <div className="relative flex-shrink-0" style={{ padding: 3, background: "#2a1c0e" }}>
+                  <img src={steamProfile.avatar} alt={steamProfile.name} className="w-11 h-11 object-cover" style={{ filter: "sepia(.45) contrast(1.05)" }} />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-serif-sc text-[13px] leading-tight break-words line-clamp-2" style={{ color: INK.text }} title={steamProfile.name}>{steamProfile.name}</div>
+                  {steamHex && <HexCopy hex={steamHex} />}
+                </div>
               </div>
-            </div>
-          ) : (
-            <div className="flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-white/20 animate-pulse flex-shrink-0" />
-              <span className="text-mono text-[8px] text-white/30 uppercase tracking-wider">Steam…</span>
-            </div>
-          )}
+            ) : (
+              <div className="flex items-center justify-center gap-2 mt-3 py-1">
+                <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: INK.soft }} />
+                <span className="text-serif-sc text-[11px] tracking-wide" style={{ color: INK.soft }}>Identificazione…</span>
+              </div>
+            )}
 
-          {/* separator */}
-          <div className="h-px bg-white/7" />
+            <PaperRule double className="my-3" />
 
-          {/* accesso */}
-          <AccessChip status={accessStatus} ban={banInfo} />
+            {/* accesso */}
+            <AccessChip status={accessStatus} ban={banInfo} />
+          </Poster>
         </div>
 
         {/* ── CENTER HERO ── */}
@@ -450,13 +524,13 @@ export default function App() {
                   className="h-[130px] w-auto object-contain drop-shadow-[0_0_48px_rgba(214,138,60,.40)]"
                   onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
                 /> */}
-                <h1 className="text-display uppercase text-[60px] leading-[.9] text-bone-50 drop-shadow-[0_4px_24px_rgba(0,0,0,.95)]">
-                  Borderline
-                </h1>
-                <div className="flex items-center gap-3 mt-1">
-                  <span className="h-px w-12 bg-gradient-to-r from-transparent to-gold-500/38" />
+                <AnimatedTitle />
+                <div className="flex items-center gap-3 mt-1.5">
+                  <span className="h-px w-10 bg-gradient-to-r from-transparent to-gold-500/45" />
+                  <Star size={9} style={{ color: "var(--accent)" }} className="opacity-80" />
                   <span className="text-mono text-[9px] tracking-[.32em] text-gold-400 uppercase">Il tuo viaggio nel West ha inizio qui</span>
-                  <span className="h-px w-12 bg-gradient-to-l from-transparent to-gold-500/38" />
+                  <Star size={9} style={{ color: "var(--accent)" }} className="opacity-80" />
+                  <span className="h-px w-10 bg-gradient-to-l from-transparent to-gold-500/45" />
                 </div>
               </div>
 
@@ -501,53 +575,61 @@ export default function App() {
           />
         )}
 
-        {/* ══ BOTTOM BAR ══ */}
+        {/* ══ BOTTOM BAR — bancone del saloon ══ */}
         <div
-          className="absolute bottom-0 left-0 right-0 h-14 grid items-center z-20 border-t border-white/6 px-5"
+          className="absolute bottom-0 left-0 right-0 h-14 grid items-center z-20 px-6"
           style={{
             gridTemplateColumns: "1fr auto 1fr",
-            background: "rgba(4,3,2,.85)",
-            backdropFilter: "blur(16px)",
+            background:
+              "radial-gradient(130% 220% at 50% 0%, rgba(214,138,60,.09), transparent 52%), radial-gradient(60% 100% at 50% 100%, rgba(0,0,0,.55), transparent), #120c08",
           }}
         >
+          {/* rail in ottone in alto */}
+          <div className="absolute inset-x-0 top-0 h-px" style={{ background: "linear-gradient(90deg, transparent, rgba(230,164,92,.65) 18%, rgba(230,164,92,.65) 82%, transparent)" }} />
+          <div className="absolute inset-x-0 top-px h-px bg-black/50" />
+          {/* grana sottile per legare alle carte */}
+          <div className="absolute inset-0 pointer-events-none opacity-[.12] mix-blend-overlay" style={{ backgroundImage: PAPER_NOISE }} />
+
           {/* LEFT — meta + status */}
-          <div className="flex items-center gap-3">
-            <span className="text-mono text-[8px] uppercase tracking-[.28em] text-white/20">{appVersion ? `v${appVersion}` : ""}</span>
-            <span className="text-white/12">·</span>
-            <span className="text-mono text-[8px] text-white/16">© 2026 BorderlineRP</span>
+          <div className="flex items-center gap-2.5 relative">
+            <span className="text-mono text-[8px] uppercase tracking-[.28em] text-bone-200/45">{appVersion ? `v${appVersion}` : ""}</span>
+            <span className="w-1 h-1 rotate-45 bg-gold-600/40" />
+            <span className="text-serif-sc text-[11px] text-bone-200/50 tracking-wide">© 2026 BorderlineRP</span>
             {serverStatus === "online" && !initializing && (
               <>
-                <span className="text-white/12">·</span>
+                <span className="w-1 h-1 rotate-45 bg-gold-600/40" />
                 <span className="flex items-center gap-1.5">
-                  <span className="w-1 h-1 rounded-full bg-moss-500" />
-                  <span className="text-mono text-[8px] text-moss-500/55 uppercase tracking-wider">Online</span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-moss-500" style={{ boxShadow: "0 0 7px rgba(107,122,72,1)" }} />
+                  <span className="text-mono text-[8px] text-moss-500/80 uppercase tracking-wider">Online</span>
                 </span>
               </>
             )}
           </div>
 
-          {/* CENTER — EMPORIO */}
+          {/* CENTER — EMPORIO (targa incisa in ottone) */}
           <button
             onClick={() => openUrl("https://emporio.borderlinerp.com")}
-            className="group relative overflow-hidden flex items-center gap-3 px-6 py-2 border border-gold-600/35 hover:border-gold-500/65 transition-colors duration-300 cursor-pointer"
+            className="emporio-btn group relative overflow-hidden flex items-center gap-3 px-7 py-2 cursor-pointer"
             style={{
-              background: "linear-gradient(135deg, rgba(201,161,74,.08) 0%, rgba(139,90,30,.04) 100%)",
-              animation: "emporio-glow 3s ease-in-out infinite",
+              background: "linear-gradient(180deg, rgba(214,138,60,.22), rgba(120,72,24,.12) 55%, rgba(40,24,10,.2))",
+              boxShadow:
+                "inset 0 1px 0 rgba(255,214,150,.35), inset 0 -1px 0 rgba(0,0,0,.5), inset 0 0 0 1px rgba(230,164,92,.4), 0 0 18px -4px rgba(214,138,60,.5)",
+              animation: "emporio-glow 3.4s ease-in-out infinite",
             }}
           >
             <span className="absolute inset-0 overflow-hidden pointer-events-none">
-              <span className="absolute inset-y-0 w-1/3 opacity-0 group-hover:opacity-100 transition-opacity duration-300"
-                style={{ background: "linear-gradient(90deg,transparent,rgba(201,161,74,.14),transparent)", animation: "shimmer-x 2s ease-in-out infinite" }} />
+              <span className="emporio-shine absolute inset-y-0 w-1/3"
+                style={{ background: "linear-gradient(90deg,transparent,rgba(255,224,170,.3),transparent)" }} />
             </span>
-            <Diamond cls="bg-gold-500/55 group-hover:bg-gold-400 transition-colors" />
-            <span className="text-display text-[18px] text-gold-400 group-hover:text-gold-300 tracking-widest transition-colors relative">
+            <Star size={11} style={{ color: "#efbe85" }} className="relative group-hover:rotate-[72deg] transition-transform duration-500 drop-shadow-[0_1px_1px_rgba(0,0,0,.6)]" />
+            <span className="text-display text-[18px] tracking-widest relative text-gold-300 group-hover:text-gold-200 transition-colors" style={{ textShadow: "0 1px 1px rgba(0,0,0,.7)" }}>
               Emporio di Borderline
             </span>
-            <span className="text-gold-500/35 group-hover:text-gold-400/80 group-hover:translate-x-0.5 transition-all text-[12px] relative">→</span>
+            <span className="text-gold-400/60 group-hover:text-gold-300 group-hover:translate-x-0.5 transition-all text-[12px] relative">→</span>
           </button>
 
           {/* RIGHT — link + aggiorna */}
-          <div className="flex items-center justify-end gap-1">
+          <div className="flex items-center justify-end gap-0.5 relative">
             {[
               { label: "Sito",    url: "https://borderlinerp.com" },
               { label: "Discord", url: "https://discord.borderlinerp.com" },
@@ -555,16 +637,17 @@ export default function App() {
               <button
                 key={link.url}
                 onClick={() => openUrl(link.url)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-bone-200/38 hover:text-bone-100/75 hover:bg-white/5 transition-all cursor-pointer group"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-bone-200/60 hover:text-gold-300 transition-all cursor-pointer group"
               >
-                <span className="text-mono text-[9px] uppercase tracking-wider">{link.label}</span>
-                <span className="text-[9px] text-white/18 group-hover:text-white/50 group-hover:translate-x-0.5 transition-all">→</span>
+                <span className="text-serif-sc text-[12px] tracking-wide">{link.label}</span>
+                <span className="text-[9px] text-bone-200/30 group-hover:text-gold-400/80 group-hover:translate-x-0.5 transition-all">→</span>
               </button>
             ))}
-            <div className="w-px h-4 bg-white/8 mx-2" />
+            <span className="w-px h-4 bg-gold-600/25 mx-2" />
             <button
               onClick={() => { fetchHealth(); checkProcesses(); resolveIdentity(); }}
-              className="text-mono text-[8px] uppercase tracking-[.28em] text-white/18 hover:text-white/45 transition-colors cursor-pointer px-2"
+              title="Aggiorna"
+              className="text-mono text-[8px] uppercase tracking-[.28em] text-bone-200/45 hover:text-gold-300 transition-colors cursor-pointer px-2"
             >
               ↻ Aggiorna
             </button>
@@ -589,65 +672,59 @@ function UpdateModal({
   return (
     <div
       className="absolute inset-0 z-50 flex items-center justify-center"
-      style={{ background: "rgba(4,3,2,.88)", backdropFilter: "blur(10px)" }}
+      style={{ background: "rgba(4,3,2,.9)", backdropFilter: "blur(10px)" }}
     >
-      <div
-        className="flex flex-col gap-5 p-7 border border-gold-600/35"
-        style={{ width: 440, background: "rgba(8,6,3,.96)", animation: "card-in .3s ease" }}
-      >
-        {/* header */}
-        <div className="flex flex-col gap-1.5">
-          <span className="text-mono text-[8px] uppercase tracking-[.36em] text-gold-500/55">Aggiornamento Disponibile</span>
-          <h2 className="text-display text-[38px] leading-none text-bone-50">v{version}</h2>
-        </div>
+      <Poster width={440}>
+        <div className="flex flex-col gap-4">
+          {/* header */}
+          <PaperHeader no="Dispaccio dalla Centrale" title="Telegramma" />
+          <div className="flex items-baseline justify-center gap-2 -mt-1">
+            <span className="text-serif-sc text-[12px]" style={{ color: INK.head }}>Nuova edizione</span>
+            <span className="text-display text-[34px] leading-none" style={{ color: INK.red }}>v{version}</span>
+          </div>
 
-        <div className="h-px bg-white/8" />
+          <PaperRule double />
 
-        {/* note di rilascio */}
-        {notes && (
-          <p className="text-body text-[11px] text-bone-200/55 leading-relaxed max-h-28 overflow-y-auto whitespace-pre-wrap">{notes}</p>
-        )}
+          {/* note di rilascio */}
+          {notes && (
+            <p className="text-serif-sc text-[12px] leading-relaxed max-h-28 overflow-y-auto whitespace-pre-wrap" style={{ color: INK.text }}>{notes}</p>
+          )}
 
-        {/* progress */}
-        {phase === "downloading" && (
-          <div className="flex flex-col gap-2">
-            <div className="h-0.5 bg-white/8 overflow-hidden">
-              <div
-                className="h-full bg-gold-500 transition-all duration-200"
-                style={{ width: `${progress}%` }}
-              />
+          {/* progress */}
+          {phase === "downloading" && (
+            <div className="flex flex-col gap-2">
+              <div className="h-1 overflow-hidden" style={{ background: "rgba(60,38,14,.25)" }}>
+                <div className="h-full transition-all duration-200" style={{ width: `${progress}%`, background: INK.red }} />
+              </div>
+              <span className="text-mono text-[8px] uppercase tracking-wider" style={{ color: INK.soft }}>Recapito in corso… {progress}%</span>
             </div>
-            <span className="text-mono text-[8px] uppercase tracking-wider text-white/28">
-              Download {progress}%
-            </span>
-          </div>
-        )}
+          )}
 
-        {phase === "done" && (
-          <span className="text-mono text-[8px] uppercase tracking-wider text-moss-500">
-            Installazione completata — riavvio in corso…
-          </span>
-        )}
+          {phase === "done" && (
+            <span className="text-serif-sc text-[12px] text-center" style={{ color: INK.green }}>Consegnato — si riparte tra un istante…</span>
+          )}
 
-        {/* azioni */}
-        {phase === "idle" && (
-          <div className="flex items-center gap-3 pt-1">
-            <button
-              onClick={onUpdate}
-              className="flex-1 py-3.5 text-display text-[20px] tracking-[.22em] text-ink-900 bg-gold-500 hover:bg-gold-400 transition-colors cursor-pointer"
-              style={{ animation: "glow-pulse 2.8s ease-in-out infinite" }}
-            >
-              AGGIORNA ORA
-            </button>
-            <button
-              onClick={onDismiss}
-              className="px-5 py-3.5 text-mono text-[8px] uppercase tracking-wider text-white/30 hover:text-white/55 border border-white/10 hover:border-white/22 transition-colors cursor-pointer"
-            >
-              Più Tardi
-            </button>
-          </div>
-        )}
-      </div>
+          {/* azioni */}
+          {phase === "idle" && (
+            <div className="flex items-center gap-3 pt-1">
+              <button
+                onClick={onUpdate}
+                className="flex-1 py-3 text-display text-[20px] tracking-[.18em] uppercase cursor-pointer transition-colors"
+                style={{ color: "#f3e2bd", background: INK.red, boxShadow: "0 3px 0 rgba(60,18,8,.5)" }}
+              >
+                Aggiorna Ora
+              </button>
+              <button
+                onClick={onDismiss}
+                className="px-5 py-3 text-serif-sc text-[12px] tracking-wide cursor-pointer transition-opacity hover:opacity-70"
+                style={{ color: INK.text, border: `1px solid ${INK.rule}` }}
+              >
+                Più tardi
+              </button>
+            </div>
+          )}
+        </div>
+      </Poster>
     </div>
   );
 }
@@ -694,81 +771,123 @@ function CloseModal({
   return (
     <div
       className="absolute inset-0 z-50 flex items-center justify-center"
-      style={{ background: "rgba(4,3,2,.88)", backdropFilter: "blur(10px)" }}
+      style={{ background: "rgba(4,3,2,.9)", backdropFilter: "blur(10px)" }}
     >
-      <div
-        className="flex flex-col gap-5 p-7 border border-white/12"
-        style={{ width: 420, background: "rgba(8,6,3,.96)", animation: "card-in .3s ease" }}
-      >
-        <div className="flex flex-col gap-1.5">
-          <span className="text-mono text-[8px] uppercase tracking-[.36em] text-blood-500/70">Chiusura Launcher</span>
-          <h2 className="text-display text-[32px] leading-none text-bone-50">Vuoi chiudere?</h2>
+      <Poster width={420}>
+        <div className="flex flex-col gap-4">
+          <PaperHeader no="Decisione del Pioniere" title="Avviso" />
+          <h2 className="text-display text-[30px] leading-none text-center" style={{ color: INK.head }}>Lasci la città?</h2>
+
+          <PaperRule double />
+
+          <p className="text-serif-sc text-[12px] leading-relaxed text-center" style={{ color: INK.text }}>
+            {keepInBackground ? "Il launcher resterà di vedetta in background." : "Chiudendolo del tutto non potrai rientrare finché non lo riapri."}
+          </p>
+
+          <div className="flex items-center justify-between py-1">
+            <span className="text-serif-sc text-[12px] tracking-wide" style={{ color: INK.text }}>Resta di vedetta</span>
+            <button
+              onClick={onToggle}
+              className="relative w-10 h-5 flex-shrink-0 transition-colors cursor-pointer"
+              style={{ background: keepInBackground ? INK.green : "rgba(60,38,14,.3)", borderRadius: 9999 }}
+            >
+              <span
+                className="absolute top-0.5 w-4 h-4 rounded-full transition-all duration-200"
+                style={{ left: keepInBackground ? "calc(100% - 18px)" : 2, background: "#f3e2bd" }}
+              />
+            </button>
+          </div>
+
+          <div className="flex items-center gap-3 pt-1">
+            <button
+              onClick={onConfirm}
+              className="flex-1 py-3 text-display text-[18px] uppercase tracking-[.18em] cursor-pointer transition-colors"
+              style={{ color: "#f3e2bd", background: keepInBackground ? INK.head : INK.red, boxShadow: "0 3px 0 rgba(40,22,6,.5)" }}
+            >
+              {keepInBackground ? "Nascondi" : "Chiudi"}
+            </button>
+            <button
+              onClick={onCancel}
+              className="px-5 py-3 text-serif-sc text-[12px] tracking-wide cursor-pointer transition-opacity hover:opacity-70"
+              style={{ color: INK.text, border: `1px solid ${INK.rule}` }}
+            >
+              Annulla
+            </button>
+          </div>
         </div>
-
-        <div className="h-px bg-white/8" />
-
-        <p className="text-body text-[11px] text-bone-200/55 leading-relaxed">
-          {keepInBackground ? "Il launcher rimarrà in background." : "Chiudendo il launcher non potrai entrare nel server fino al suo riavvio."}
-        </p>
-
-        <div className="flex items-center justify-between py-1">
-          <span className="text-mono text-[10px] text-white/55 uppercase tracking-wider">Mantieni in background</span>
-          <button
-            onClick={onToggle}
-            className="relative w-10 h-5 flex-shrink-0 transition-colors cursor-pointer"
-            style={{
-              background: keepInBackground ? "rgba(201,161,74,.85)" : "rgba(255,255,255,.12)",
-              borderRadius: 9999,
-            }}
-          >
-            <span
-              className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all duration-200"
-              style={{ left: keepInBackground ? "calc(100% - 18px)" : 2 }}
-            />
-          </button>
-        </div>
-
-        <div className="flex items-center gap-3 pt-1">
-          <button
-            onClick={onConfirm}
-            className="flex-1 py-3.5 text-mono text-[10px] uppercase tracking-[.22em] text-ink-900 bg-gold-500 hover:bg-gold-400 transition-colors cursor-pointer"
-          >
-            {keepInBackground ? "Nascondi" : "Chiudi"}
-          </button>
-          <button
-            onClick={onCancel}
-            className="px-5 py-3.5 text-mono text-[8px] uppercase tracking-wider text-white/30 hover:text-white/55 border border-white/10 hover:border-white/22 transition-colors cursor-pointer"
-          >
-            Annulla
-          </button>
-        </div>
-      </div>
+      </Poster>
     </div>
   );
 }
 
-// ── AccessChip (inline nella card top-right) ──────────────────────────────────
+// ── HexCopy — matricola del pioniere, copiabile ──────────────────────────────
+
+function HexCopy({ hex }: { hex: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(hex);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    } catch { /* clipboard non disponibile */ }
+  };
+  return (
+    <button
+      onClick={copy}
+      title="Copia matricola"
+      className="group inline-flex items-center gap-1 mt-0.5 cursor-pointer"
+    >
+      <span className="text-mono text-[8px] tracking-wide" style={{ color: copied ? INK.green : INK.soft }}>
+        {copied ? "copiato!" : `HEX ${hex.slice(0, 6)}…${hex.slice(-4)}`}
+      </span>
+      {copied
+        ? <Check size={9} style={{ color: INK.green }} />
+        : <Copy size={9} style={{ color: INK.faint }} className="group-hover:opacity-100 opacity-60 transition-opacity" />
+      }
+    </button>
+  );
+}
+
+// ── AccessChip — verdetto d'accesso, in inchiostro sulla carta ────────────────
+
+function InkLink({ children }: { children: React.ReactNode }) {
+  return (
+    <button
+      onClick={() => openUrl("https://discord.borderlinerp.com")}
+      className="text-serif-sc text-[11px] tracking-wide cursor-pointer hover:opacity-70 transition-opacity"
+      style={{ color: INK.head, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }}
+    >
+      {children}
+    </button>
+  );
+}
 
 function AccessChip({ status, ban }: { status: AccessStatus; ban: BanInfo | null }) {
   if (status === "loading")
-    return <div className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-white/20 animate-pulse flex-shrink-0" /><span className="text-mono text-[8px] text-white/30 uppercase tracking-wider">Verifica…</span></div>;
+    return (
+      <div className="flex items-center justify-center gap-2 py-0.5">
+        <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: INK.soft }} />
+        <span className="text-serif-sc text-[11px] tracking-wide" style={{ color: INK.soft }}>Verifica del mandato…</span>
+      </div>
+    );
 
   if (status === "allowed")
     return (
-      <div className="flex items-center gap-1.5">
-        <Diamond cls="bg-moss-500" />
-        <span className="text-mono text-[8px] text-moss-500 font-bold uppercase tracking-wider">Hai la whitelist</span>
+      <div className="flex items-center gap-2">
+        <Star size={20} style={{ color: INK.green }} className="drop-shadow-[0_1px_1px_rgba(255,240,200,.5)]" />
+        <div>
+          <div className="text-mono text-[6.5px] uppercase tracking-[.32em]" style={{ color: INK.faint }}>Verdetto</div>
+          <InkStamp color={INK.green} size={16} rotate={-4}>AMMESSO</InkStamp>
+        </div>
       </div>
     );
 
   if (status === "not_allowlisted")
     return (
-      <div className="flex flex-col gap-1.5">
-        <div className="flex items-center gap-1.5">
-          <Diamond cls="bg-blood-800" />
-          <span className="text-mono text-[8px] uppercase tracking-wider">Non hai la Whitelist</span>
-        </div>
-        <button onClick={() => openUrl("https://discord.borderlinerp.com")} className="text-mono text-[8px] text-gold-500/55 hover:text-gold-400 transition-colors cursor-pointer uppercase tracking-wider">→ Apri Discord</button>
+      <div className="flex flex-col gap-1.5 items-center text-center">
+        <InkStamp color={INK.red} size={18} rotate={-5}>NON IN LISTA</InkStamp>
+        <p className="text-serif-sc text-[10.5px] leading-snug" style={{ color: INK.text }}>Richiedi l'accesso su Discord.</p>
+        <InkLink>→ Apri un ticket su Discord</InkLink>
       </div>
     );
 
@@ -778,30 +897,27 @@ function AccessChip({ status, ban }: { status: AccessStatus; ban: BanInfo | null
       ? new Date(ban.expires_at).toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit", year: "2-digit" })
       : null;
     return (
-      <div className="flex flex-col gap-1.5">
-        <div className="flex items-center gap-1.5">
-          <Diamond cls="bg-blood-600" />
-          <span className="text-mono text-[8px] text-blood-400 uppercase tracking-wider">{isPerm ? "Ban Permanente" : "Ban Temporaneo"}</span>
-        </div>
-        {ban?.reason && <p className="text-[9px] text-white/45 font-body leading-snug">{ban.reason}</p>}
-        {expires && <p className="text-mono text-[7px] text-blood-500/55">Scade: {expires}</p>}
-        <button onClick={() => openUrl("https://discord.borderlinerp.com")} className="text-mono text-[8px] text-gold-500/55 hover:text-gold-400 transition-colors cursor-pointer uppercase tracking-wider">→ Ricorso Discord</button>
+      <div className="flex flex-col gap-1.5 items-center text-center">
+        <InkStamp color={INK.red} size={17} rotate={-6}>{isPerm ? "BANDITO" : "ESILIATO"}</InkStamp>
+        {ban?.reason && <p className="text-serif-sc text-[10.5px] leading-snug" style={{ color: INK.text }}>{ban.reason}</p>}
+        {expires && <p className="text-mono text-[7px] uppercase tracking-wider" style={{ color: INK.red }}>Revoca il {expires}</p>}
+        <InkLink>→ Ricorso su Discord</InkLink>
       </div>
     );
   }
 
   if (status === "unknown")
     return (
-      <div className="flex items-center gap-1.5">
-        <Diamond cls="bg-white/20" />
-        <span className="text-mono text-[8px] text-white/28 uppercase tracking-wider">Steam offline</span>
+      <div className="flex items-center justify-center gap-2 py-0.5">
+        <span className="w-1.5 h-1.5 rounded-full" style={{ background: INK.soft }} />
+        <span className="text-serif-sc text-[11px] tracking-wide" style={{ color: INK.soft }}>Steam non in linea</span>
       </div>
     );
 
   return (
-    <div className="flex items-center gap-1.5">
-      <Diamond cls="bg-gold-700/50" />
-      <span className="text-mono text-[8px] text-white/28 uppercase tracking-wider">Allowlist</span>
+    <div className="flex items-center justify-center gap-2 py-0.5">
+      <span className="w-1.5 h-1.5 rounded-full" style={{ background: INK.soft }} />
+      <span className="text-serif-sc text-[11px] tracking-wide" style={{ color: INK.soft }}>Mandato sconosciuto</span>
     </div>
   );
 }

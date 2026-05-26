@@ -15,19 +15,19 @@
     "@tauri-apps/plugin-opener": "^2.5.4",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
-    "lucide-react": "^1.14.0",
+    "lucide-react": "^1.16.0",
     "motion": "^12.40.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "tailwindcss": "^4.3.0"
   },
   "devDependencies": {
-    "@types/react": "^19.2.14",
+    "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^4.7.0",
+    "@vitejs/plugin-react": "^6.0.2",
     "@tailwindcss/vite": "^4.3.0",
-    "typescript": "~5.8.3",
-    "vite": "^7.3.3",
-    "@tauri-apps/cli": "^2.11.1"
+    "typescript": "~6.0.3",
+    "vite": "^8.0.14",
+    "@tauri-apps/cli": "^2.11.2"
   }
 }

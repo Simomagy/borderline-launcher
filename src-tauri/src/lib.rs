@@ -1,4 +1,6 @@
+use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 use reqwest::header::{AUTHORIZATION, HeaderValue};
+use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -14,6 +16,23 @@ const NO_WINDOW: u32 = 0x08000000;
 const BRIDGE_URL: &str = env!("BRIDGE_URL");
 const BRIDGE_API_KEY: &str = env!("BRIDGE_API_KEY");
 const STEAM_WEBAPI_KEY: &str = env!("STEAM_WEBAPI_KEY");
+const DISCORD_CLIENT_ID: &str = env!("DISCORD_CLIENT_ID");
+
+// ── Discord Rich Presence — configurazione ──────────────────────────────────
+// Gli asset (key 'logo') vanno caricati nel Developer Portal Discord:
+//   Rich Presence → Art Assets. %players è sostituito a runtime con
+//   (giocatori in-game + launcher aperti).
+const RPC_STATE_TEMPLATE: &str = "In gioco — %players giocatori";
+const RPC_LARGE_IMAGE: &str = "logo";
+const RPC_LARGE_TEXT: &str = "Borderline";
+const RPC_BUTTONS: [(&str, &str); 2] = [
+    ("Sito Web", "https://borderlinerp.com"),
+    ("Server Discord", "https://ds.borderlinerp.com"),
+];
+
+/// Client Discord IPC condiviso fra le invocazioni. `None` finché non connesso.
+#[derive(Default)]
+struct DiscordPresence(Mutex<Option<DiscordIpcClient>>);
 
 /// Scansiona una volta il processo table e ritorna lo stato di Discord, Steam e RedM.
 /// Una sola chiamata API invece di tre spawn di tasklist.
@@ -24,21 +43,24 @@ fn check_processes() -> serde_json::Value {
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, false);
 
-    let mut discord = false;
-    let mut steam   = false;
-    let mut redm    = false;
+    let mut discord   = false;
+    let mut steam     = false;
+    let mut redm      = false;
+    let mut teamspeak = false;
 
     for process in sys.processes().values() {
         match process.name().to_string_lossy().to_lowercase().as_str() {
             "discord.exe" => discord = true,
             "steam.exe"   => steam   = true,
             "redm.exe"    => redm    = true,
+            // TeamSpeak 3 (ts3client_win64/32) e TeamSpeak 5 (teamspeak.exe) — backend vocale YACA
+            "ts3client_win64.exe" | "ts3client_win32.exe" | "teamspeak.exe" => teamspeak = true,
             _ => {}
         }
-        if discord && steam && redm { break; }
+        if discord && steam && redm && teamspeak { break; }
     }
 
-    serde_json::json!({ "discord": discord, "steam": steam, "redm": redm })
+    serde_json::json!({ "discord": discord, "steam": steam, "redm": redm, "teamspeak": teamspeak })
 }
 
 fn spawn_detached(uri: &str) -> Result<(), String> {
@@ -242,12 +264,83 @@ async fn fetch_bridge(endpoint: String) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Heartbeat verso pry-bridge: registra questo launcher come attivo e ritorna
+/// il conteggio aggregato. Risposta JSON attesa: `{ players, launchers }`
+/// (players = giocatori in-game, launchers = launcher aperti incluso questo).
+#[tauri::command]
+async fn launcher_heartbeat(steam_hex: String) -> Result<String, String> {
+    let url = format!("{}/api/v1/launcher-heartbeat", BRIDGE_URL);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .danger_accept_invalid_certs(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    client
+        .post(&url)
+        .header(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", BRIDGE_API_KEY))
+                .map_err(|e| e.to_string())?,
+        )
+        .header("steam", &steam_hex)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .text()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Aggiorna (o inizializza alla prima chiamata) la Rich Presence di Discord.
+/// `players` è il totale già calcolato dal frontend (in-game + launcher aperti).
+#[tauri::command]
+fn update_discord_presence(
+    presence: tauri::State<'_, DiscordPresence>,
+    players: u32,
+) -> Result<(), String> {
+    let mut guard = presence.0.lock().map_err(|e| e.to_string())?;
+
+    // Connessione lazy: la prima chiamata apre l'IPC verso il client Discord.
+    if guard.is_none() {
+        let mut client = DiscordIpcClient::new(DISCORD_CLIENT_ID);
+        client.connect().map_err(|e| e.to_string())?;
+        *guard = Some(client);
+    }
+    let client = guard.as_mut().unwrap();
+
+    let state_text = RPC_STATE_TEMPLATE.replace("%players", &players.to_string());
+    let activity = activity::Activity::new()
+        .state(&state_text)
+        .assets(
+            activity::Assets::new()
+                .large_image(RPC_LARGE_IMAGE)
+                .large_text(RPC_LARGE_TEXT),
+        )
+        .buttons(
+            RPC_BUTTONS
+                .iter()
+                .map(|(label, url)| activity::Button::new(*label, *url))
+                .collect(),
+        );
+
+    // Se Discord è stato chiuso l'IPC fallisce: azzera lo stato così il
+    // prossimo update tenta una nuova connessione.
+    if let Err(e) = client.set_activity(activity) {
+        *guard = None;
+        return Err(e.to_string());
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
+        .manage(DiscordPresence::default())
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Mostra Launcher", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Esci", true, None::<&str>)?;
@@ -304,6 +397,8 @@ pub fn run() {
             get_steam_profile,
             check_player_access,
             authorize_entry,
+            launcher_heartbeat,
+            update_discord_presence,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
