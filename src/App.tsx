@@ -631,7 +631,7 @@ export default function App() {
           {/* RIGHT — link + aggiorna */}
           <div className="flex items-center justify-end gap-0.5 relative">
             {[
-              { label: "Sito",    url: "https://borderlinerp.com" },
+              { label: "Sito Web",    url: "https://borderlinerp.com" },
               { label: "Discord", url: "https://discord.borderlinerp.com" },
             ].map(link => (
               <button
