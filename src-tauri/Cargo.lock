@@ -319,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "borderline-launcher"
-version = "1.0.1"
+version = "1.0.6"
 dependencies = [
  "discord-rich-presence",
  "reqwest",
