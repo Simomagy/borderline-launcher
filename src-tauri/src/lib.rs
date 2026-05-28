@@ -131,6 +131,40 @@ fn launch_game() -> Result<(), String> {
     spawn_detached("redm://connect/rmabxvx")
 }
 
+/// Avvia TeamSpeak (TS5 prima, TS3 64/32-bit poi). TeamSpeak non espone uno
+/// URI scheme stabile per "apri l'app", quindi cerchiamo l'eseguibile nei path
+/// di installazione standard. Lancia il primo che esiste; errore se nessuno.
+#[tauri::command]
+fn launch_teamspeak() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::path::PathBuf;
+        let candidates: Vec<PathBuf> = [
+            std::env::var_os("LOCALAPPDATA")
+                .map(|p| PathBuf::from(p).join(r"Programs\TeamSpeak 5\TeamSpeak.exe")),
+            std::env::var_os("ProgramFiles")
+                .map(|p| PathBuf::from(p).join(r"TeamSpeak 3 Client\ts3client_win64.exe")),
+            std::env::var_os("ProgramFiles(x86)")
+                .map(|p| PathBuf::from(p).join(r"TeamSpeak 3 Client\ts3client_win32.exe")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        for path in &candidates {
+            if path.exists() {
+                // spawn_detached delega a explorer.exe -> avvio nel contesto
+                // utente normale (non eredita l'elevazione del launcher).
+                return spawn_detached(&path.to_string_lossy());
+            }
+        }
+        Err("TeamSpeak non trovato nei percorsi standard".to_string())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    Err("Non supportato su questa piattaforma".to_string())
+}
+
 /// Legge l'utente Steam attivo dal registro Windows e ritorna hex + SteamID64.
 /// HKCU\Software\Valve\Steam\ActiveProcess\ActiveUser = SteamID3 (DWORD).
 /// SteamID64 = 76561197960265728 + SteamID3.
@@ -430,6 +464,7 @@ pub fn run() {
             launch_game,
             launch_discord,
             launch_steam,
+            launch_teamspeak,
             get_steam_hex,
             get_steam_profile,
             check_player_access,

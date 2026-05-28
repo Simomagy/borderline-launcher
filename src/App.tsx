@@ -312,7 +312,9 @@ export default function App() {
     const finish = async () => { await resolveIdentity(); setInitializing(false); fetchHealth(); checkAnticheat(); };
     const startup = async () => {
       setInitLabel("Verifica applicazioni");
-      const { discord, steam } = await checkProcesses();
+      const { discord, steam, teamspeak } = await checkProcesses();
+      // TeamSpeak è opzionale (non blocca l'init): fire-and-forget se non gira.
+      if (!teamspeak) { invoke("launch_teamspeak").catch(() => {}); }
       if (discord && steam) { initDone.current = true; await finish(); return; }
       if (!discord) { setInitLabel("Avvio Discord"); await invoke("launch_discord").catch(() => {}); }
       if (!steam)   { setInitLabel("Avvio Steam");   await invoke("launch_steam").catch(() => {}); }
@@ -357,9 +359,10 @@ export default function App() {
     const a = setInterval(() => recheckAccess(steamHex), 30_000);
     const d = setInterval(updatePresence, 30_000);
     const c = setInterval(checkAnticheat, 3_000);
+    const u = setInterval(checkForUpdates, 15 * 60_000); // check updater ogni 15 min
     let unlisten: (() => void) | undefined;
     listen("tauri://focus", () => recheckAccess(steamHex)).then(f => { unlisten = f; });
-    return () => { clearInterval(h); clearInterval(p); clearInterval(a); clearInterval(d); clearInterval(c); unlisten?.(); };
+    return () => { clearInterval(h); clearInterval(p); clearInterval(a); clearInterval(d); clearInterval(c); clearInterval(u); unlisten?.(); };
   }, [initializing, fetchHealth, checkProcesses, recheckAccess, steamHex, checkForUpdates, updatePresence, checkAnticheat]);
 
   const canPlay =
@@ -473,7 +476,7 @@ export default function App() {
               {[
                 { label: "Discord",   running: discordRunning,   action: () => invoke("launch_discord"), missing: "✗ non avviato" },
                 { label: "Steam",     running: steamRunning,     action: () => invoke("launch_steam"),   missing: "✗ non avviato" },
-                { label: "TeamSpeak", running: teamspeakRunning, action: () => openUrl(YACA_ADDON_URL),  missing: "✗ non avviato" },
+                { label: "TeamSpeak", running: teamspeakRunning, action: () => invoke("launch_teamspeak").catch(() => {}), missing: "✗ non avviato" },
               ].map(app => (
                 <div key={app.label} className="flex items-center justify-between">
                   <span className="text-serif-sc text-[12px] tracking-wide" style={{ color: INK.text }}>{app.label}</span>
@@ -686,8 +689,8 @@ export default function App() {
             ))}
             <span className="w-px h-4 bg-gold-600/25 mx-2" />
             <button
-              onClick={() => { fetchHealth(); checkProcesses(); resolveIdentity(); }}
-              title="Aggiorna"
+              onClick={() => { fetchHealth(); checkProcesses(); resolveIdentity(); checkForUpdates(); }}
+              title="Aggiorna stato + controlla aggiornamenti"
               className="text-mono text-[8px] uppercase tracking-[.28em] text-bone-200/45 hover:text-gold-300 transition-colors cursor-pointer px-2"
             >
               ↻ Aggiorna
@@ -705,7 +708,7 @@ export default function App() {
 type UpdatePhase = "idle" | "downloading" | "done";
 
 function UpdateModal({
-  version, notes, phase, progress, onUpdate, onDismiss,
+  version, notes, phase, progress, onUpdate,
 }: {
   version: string; notes: string; phase: UpdatePhase;
   progress: number; onUpdate: () => void; onDismiss: () => void;
@@ -750,17 +753,10 @@ function UpdateModal({
             <div className="flex items-center gap-3 pt-1">
               <button
                 onClick={onUpdate}
-                className="flex-1 py-3 text-display text-[20px] tracking-[.18em] uppercase cursor-pointer transition-colors"
+                className="py-3 text-display text-[20px] tracking-[.18em] uppercase cursor-pointer transition-colors"
                 style={{ color: "#f3e2bd", background: INK.red, boxShadow: "0 3px 0 rgba(60,18,8,.5)" }}
               >
                 Aggiorna Ora
-              </button>
-              <button
-                onClick={onDismiss}
-                className="px-5 py-3 text-serif-sc text-[12px] tracking-wide cursor-pointer transition-opacity hover:opacity-70"
-                style={{ color: INK.text, border: `1px solid ${INK.rule}` }}
-              >
-                Più tardi
               </button>
             </div>
           )}
