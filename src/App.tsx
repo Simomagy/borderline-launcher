@@ -157,6 +157,10 @@ export default function App() {
   const [steamProfile, setSteamProfile] = useState<SteamProfile | null>(null);
   const [accessStatus, setAccessStatus] = useState<AccessStatus>("loading");
   const [banInfo, setBanInfo]           = useState<BanInfo | null>(null);
+  // Stato anti-cheat: authenticated = challenge verificato dal server (client integro);
+  // violation = dumper rilevato. GIOCA è bloccato finché non è authenticated && !violation.
+  const [acStatus, setAcStatus] = useState<{ authenticated: boolean; violation: boolean; reason?: string }>({ authenticated: false, violation: false });
+  const [playError, setPlayError] = useState<string | null>(null);
 
   const [showSplash, setShowSplash] = useState(true);
   const [splashExiting, setSplashExiting] = useState(false);
@@ -185,20 +189,17 @@ export default function App() {
     } catch { setServerStatus("offline"); }
   }, []);
 
-  // Heartbeat al bridge → conteggio aggregato → Discord Rich Presence.
-  // %players = giocatori in-game + launcher aperti (incluso questo).
+  // Conteggio aggregato (calcolato dal thread anti-cheat sull'ultimo heartbeat)
+  // → Discord Rich Presence. %players = giocatori in-game + launcher aperti.
+  // L'heartbeat HTTP non è più qui: lo possiede il thread Rust (scan + challenge).
   const updatePresence = useCallback(async () => {
     let total = playersRef.current;
     try {
-      if (steamHex) {
-        const raw = await invoke<string>("launcher_heartbeat", { steamHex });
-        const r = JSON.parse(raw);
-        total = (r.players ?? playersRef.current) + (r.launchers ?? 0);
-      }
-    } catch { /* bridge irraggiungibile — usa il fallback in-game */ }
+      const r = await invoke<{ players: number; launchers: number }>("get_heartbeat_counts");
+      total = (r.players || playersRef.current) + (r.launchers || 0);
+    } catch { /* stato non ancora pronto — usa il fallback in-game */ }
     invoke("update_discord_presence", { players: total }).catch(() => { /* Discord non attivo */ });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [steamHex]);
+  }, []);
 
   const checkProcesses = useCallback(async () => {
     const { discord, steam, redm, teamspeak } = await invoke<{ discord: boolean; steam: boolean; redm: boolean; teamspeak: boolean }>("check_processes");
@@ -220,6 +221,14 @@ export default function App() {
       } else {
         setAccessStatus("not_allowlisted");
       }
+    } catch { /* mantieni stato corrente */ }
+  }, []);
+
+  // Polling stato anti-cheat (autenticazione challenge + rilevazione dumper).
+  const checkAnticheat = useCallback(async () => {
+    try {
+      const r = await invoke<{ authenticated: boolean; violation: boolean; reason?: string }>("get_anticheat_status");
+      setAcStatus({ authenticated: !!r.authenticated, violation: !!r.violation, reason: r.reason });
     } catch { /* mantieni stato corrente */ }
   }, []);
 
@@ -270,6 +279,9 @@ export default function App() {
     try {
       const info = await invoke<{ hex: string; id64: string }>("get_steam_hex");
       setSteamHex(info.hex);
+      // Comunica l'identità al thread anti-cheat: da qui parte l'heartbeat
+      // (scan dumper + challenge) gestito interamente lato Rust.
+      invoke("set_launcher_identity", { steamHex: info.hex }).catch(() => {});
       setInitLabel("Recupero dati del pioniere");
       const [pr, ar] = await Promise.allSettled([
         invoke<string>("get_steam_profile", { id64: info.id64 }),
@@ -297,7 +309,7 @@ export default function App() {
   useEffect(() => {
     let poll: ReturnType<typeof setInterval>;
     let tout: ReturnType<typeof setTimeout>;
-    const finish = async () => { await resolveIdentity(); setInitializing(false); fetchHealth(); };
+    const finish = async () => { await resolveIdentity(); setInitializing(false); fetchHealth(); checkAnticheat(); };
     const startup = async () => {
       setInitLabel("Verifica applicazioni");
       const { discord, steam } = await checkProcesses();
@@ -339,19 +351,22 @@ export default function App() {
     if (initializing) return;
     checkForUpdates();
     updatePresence();
+    checkAnticheat();
     const h = setInterval(fetchHealth, 30_000);
     const p = setInterval(checkProcesses, 5_000);
     const a = setInterval(() => recheckAccess(steamHex), 30_000);
     const d = setInterval(updatePresence, 30_000);
+    const c = setInterval(checkAnticheat, 3_000);
     let unlisten: (() => void) | undefined;
     listen("tauri://focus", () => recheckAccess(steamHex)).then(f => { unlisten = f; });
-    return () => { clearInterval(h); clearInterval(p); clearInterval(a); clearInterval(d); unlisten?.(); };
-  }, [initializing, fetchHealth, checkProcesses, recheckAccess, steamHex, checkForUpdates, updatePresence]);
+    return () => { clearInterval(h); clearInterval(p); clearInterval(a); clearInterval(d); clearInterval(c); unlisten?.(); };
+  }, [initializing, fetchHealth, checkProcesses, recheckAccess, steamHex, checkForUpdates, updatePresence, checkAnticheat]);
 
   const canPlay =
     !redmRunning &&
     serverStatus === "online" && steamRunning &&
-    (accessStatus === "allowed" || (accessStatus === "banned" && banInfo?.ban_type === "temporary"));
+    (accessStatus === "allowed" || (accessStatus === "banned" && banInfo?.ban_type === "temporary")) &&
+    acStatus.authenticated && !acStatus.violation;
 
   const playLabel = () => {
     if (redmRunning)                 return "In gioco";
@@ -361,6 +376,8 @@ export default function App() {
     if (accessStatus === "not_allowlisted") return "Accesso Negato";
     if (accessStatus === "banned" && banInfo?.ban_type === "permanent") return "Bannato";
     if (accessStatus === "loading")  return "Verifica…";
+    if (acStatus.violation)          return "Bloccato";
+    if (!acStatus.authenticated)     return "Autenticazione…";
     return "Gioca";
   };
 
@@ -541,21 +558,45 @@ export default function App() {
                   label={playLabel()}
                   onClick={async () => {
                     if (!canPlay || !steamHex) return;
-                    try { await invoke("authorize_entry", { steamHex }); } catch { /* non bloccare il gioco se la chiamata fallisce */ }
+                    setPlayError(null);
+                    // 1) Ricontrolla integrità/violazione appena prima dell'avvio.
+                    try {
+                      const ac = await invoke<{ authenticated: boolean; violation: boolean }>("get_anticheat_status");
+                      if (ac.violation)        { setPlayError("Anomalia di sicurezza rilevata. Riavvia il Launcher."); return; }
+                      if (!ac.authenticated)   { setPlayError("Autenticazione in corso, riprova tra un istante."); checkAnticheat(); return; }
+                    } catch { setPlayError("Verifica di sicurezza non riuscita."); return; }
+                    // 2) Autorizza l'ingresso e verifica l'esito: NIENTE avvio se fallisce.
+                    try {
+                      const raw = await invoke<string>("authorize_entry", { steamHex });
+                      const r = JSON.parse(raw);
+                      if (!r.success) { setPlayError(r.message || "Autorizzazione negata dal server."); return; }
+                    } catch { setPlayError("Impossibile contattare il server. Riprova."); return; }
+                    // 3) Tutto verificato → avvia RedM.
                     invoke("launch_game");
                   }}
                 />
 
                 {/* hint */}
                 <div className="h-4 flex items-center justify-center">
-                  {accessStatus === "banned" && banInfo?.ban_type === "temporary" && (
-                    <span className="text-mono text-[8px] text-blood-500/60 uppercase tracking-wider">Ban temporaneo · istanza separata</span>
-                  )}
-                  {accessStatus === "not_allowlisted" && (
-                    <span className="text-mono text-[8px] text-blood-500/60 uppercase tracking-wider">Apri un ticket Discord per la whitelist</span>
-                  )}
-                  {!steamRunning && serverStatus === "online" && (
-                    <span className="text-mono text-[8px] text-blood-500/60 uppercase tracking-wider">Steam non rilevato — richiesto per giocare</span>
+                  {playError ? (
+                    <span className="text-mono text-[8px] text-blood-500/80 uppercase tracking-wider">{playError}</span>
+                  ) : acStatus.violation ? (
+                    <span className="text-mono text-[8px] text-blood-500/80 uppercase tracking-wider">Anomalia di sicurezza · riavvia il Launcher</span>
+                  ) : (
+                    <>
+                      {accessStatus === "banned" && banInfo?.ban_type === "temporary" && (
+                        <span className="text-mono text-[8px] text-blood-500/60 uppercase tracking-wider">Ban temporaneo · istanza separata</span>
+                      )}
+                      {accessStatus === "not_allowlisted" && (
+                        <span className="text-mono text-[8px] text-blood-500/60 uppercase tracking-wider">Apri un ticket Discord per la whitelist</span>
+                      )}
+                      {!steamRunning && serverStatus === "online" && (
+                        <span className="text-mono text-[8px] text-blood-500/60 uppercase tracking-wider">Steam non rilevato — richiesto per giocare</span>
+                      )}
+                      {steamRunning && serverStatus === "online" && accessStatus === "allowed" && !acStatus.authenticated && (
+                        <span className="text-mono text-[8px] text-gold-400/60 uppercase tracking-wider">Autenticazione del Launcher in corso…</span>
+                      )}
+                    </>
                   )}
                 </div>
               </div>

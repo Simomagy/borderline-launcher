@@ -7,16 +7,21 @@ use tauri::{
     Manager,
 };
 
+mod anticheat;
+use anticheat::AntiCheatHandle;
+
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
 const BREAKAWAY_FLAGS: u32 = 0x01000000 | 0x00000008 | 0x00000200;
 const NO_WINDOW: u32 = 0x08000000;
 
-const BRIDGE_URL: &str = env!("BRIDGE_URL");
-const BRIDGE_API_KEY: &str = env!("BRIDGE_API_KEY");
+pub(crate) const BRIDGE_URL: &str = env!("BRIDGE_URL");
+pub(crate) const BRIDGE_API_KEY: &str = env!("BRIDGE_API_KEY");
 const STEAM_WEBAPI_KEY: &str = env!("STEAM_WEBAPI_KEY");
 const DISCORD_CLIENT_ID: &str = env!("DISCORD_CLIENT_ID");
+// Segreto condiviso col bridge per il challenge/response HMAC (anti-tamper).
+pub(crate) const LAUNCHER_HMAC_SECRET: &str = env!("LAUNCHER_HMAC_SECRET");
 
 // ── Discord Rich Presence — configurazione ──────────────────────────────────
 // Gli asset (key 'logo') vanno caricati nel Developer Portal Discord:
@@ -212,8 +217,26 @@ async fn check_player_access(steam_hex: String) -> Result<String, String> {
 }
 
 /// POST /api/v1/authorize-entry — comunica al bridge che questo steam hex sta per connettersi.
+/// Allega la risposta al challenge corrente (HMAC del nonce gestito dal thread
+/// anti-cheat): un client modificato che non ha la catena heartbeat valida non
+/// ottiene l'autorizzazione e quindi non può connettersi.
 #[tauri::command]
-async fn authorize_entry(steam_hex: String) -> Result<String, String> {
+async fn authorize_entry(
+    state: tauri::State<'_, AntiCheatHandle>,
+    steam_hex: String,
+) -> Result<String, String> {
+    // Attendi un nonce valido (il thread heartbeat lo popola ad ogni risposta).
+    // Copre la corsa "GIOCA premuto prima del primo heartbeat".
+    let mut nonce = String::new();
+    for _ in 0..30 {
+        nonce = state.0.lock().map_err(|e| e.to_string())?.nonce.clone();
+        if !nonce.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    let auth = anticheat::solve_challenge(LAUNCHER_HMAC_SECRET, &nonce);
+
     let url = format!("{}/api/v1/authorize-entry", BRIDGE_URL);
 
     let client = reqwest::Client::builder()
@@ -230,6 +253,7 @@ async fn authorize_entry(steam_hex: String) -> Result<String, String> {
                 .map_err(|e| e.to_string())?,
         )
         .header("steam", &steam_hex)
+        .header("auth", &auth)
         .send()
         .await
         .map_err(|e| e.to_string())?
@@ -264,33 +288,42 @@ async fn fetch_bridge(endpoint: String) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Heartbeat verso pry-bridge: registra questo launcher come attivo e ritorna
-/// il conteggio aggregato. Risposta JSON attesa: `{ players, launchers }`
-/// (players = giocatori in-game, launchers = launcher aperti incluso questo).
+/// Comunica al thread anti-cheat lo steam hex risolto dal frontend; da quel
+/// momento il thread inizia a mandare l'heartbeat (con scan + challenge).
 #[tauri::command]
-async fn launcher_heartbeat(steam_hex: String) -> Result<String, String> {
-    let url = format!("{}/api/v1/launcher-heartbeat", BRIDGE_URL);
+fn set_launcher_identity(
+    state: tauri::State<'_, AntiCheatHandle>,
+    steam_hex: String,
+) -> Result<(), String> {
+    state.0.lock().map_err(|e| e.to_string())?.steam_hex = Some(steam_hex);
+    Ok(())
+}
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .danger_accept_invalid_certs(true)
-        .build()
-        .map_err(|e| e.to_string())?;
+/// Conteggio aggregato dall'ultimo heartbeat del thread (per la Rich Presence).
+#[tauri::command]
+fn get_heartbeat_counts(state: tauri::State<'_, AntiCheatHandle>) -> serde_json::Value {
+    let st = state.0.lock().unwrap();
+    serde_json::json!({ "players": st.players, "launchers": st.launchers })
+}
 
-    client
-        .post(&url)
-        .header(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", BRIDGE_API_KEY))
-                .map_err(|e| e.to_string())?,
-        )
-        .header("steam", &steam_hex)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .text()
-        .await
-        .map_err(|e| e.to_string())
+/// Stato anti-cheat corrente: usato dal frontend per abilitare/bloccare GIOCA.
+/// `authenticated` = challenge verificato dal server E heartbeat già stabilito;
+/// `violation` = dumper rilevato. GIOCA va abilitato solo se authenticated && !violation.
+#[tauri::command]
+fn get_anticheat_status(state: tauri::State<'_, AntiCheatHandle>) -> serde_json::Value {
+    let st = state.0.lock().unwrap();
+    let authenticated = st.trusted && !st.nonce.is_empty() && st.steam_hex.is_some();
+    let (violation, reason, signature) = match &st.violation {
+        Some(v) => (true, v.reason.clone(), v.signature.clone()),
+        None => (false, String::new(), String::new()),
+    };
+    serde_json::json!({
+        "violation": violation,
+        "reason": reason,
+        "signature": signature,
+        "trusted": st.trusted,
+        "authenticated": authenticated,
+    })
 }
 
 /// Aggiorna (o inizializza alla prima chiamata) la Rich Presence di Discord.
@@ -336,11 +369,15 @@ fn update_discord_presence(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let anticheat = AntiCheatHandle::default();
+    anticheat::spawn(anticheat.clone());
+
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .manage(DiscordPresence::default())
+        .manage(anticheat)
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Mostra Launcher", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Esci", true, None::<&str>)?;
@@ -397,7 +434,9 @@ pub fn run() {
             get_steam_profile,
             check_player_access,
             authorize_entry,
-            launcher_heartbeat,
+            set_launcher_identity,
+            get_heartbeat_counts,
+            get_anticheat_status,
             update_discord_presence,
         ])
         .run(tauri::generate_context!())

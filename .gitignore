@@ -12,7 +12,9 @@ dist
 dist-ssr
 *.local
 
+*.md
 .env
+.release.env
 tauri.key
 tauri.key.pub
 release.ps1
