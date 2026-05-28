@@ -471,9 +471,9 @@ export default function App() {
             {/* applicazioni — checklist d'inchiostro */}
             <div className="flex flex-col gap-1.5">
               {[
-                { label: "Discord",   running: discordRunning,   action: () => invoke("launch_discord"), missing: "✗ avvia" },
-                { label: "Steam",     running: steamRunning,     action: () => invoke("launch_steam"),   missing: "✗ avvia" },
-                { label: "TeamSpeak", running: teamspeakRunning, action: () => openUrl(YACA_ADDON_URL),  missing: "✗ addon" },
+                { label: "Discord",   running: discordRunning,   action: () => invoke("launch_discord"), missing: "✗ non avviato" },
+                { label: "Steam",     running: steamRunning,     action: () => invoke("launch_steam"),   missing: "✗ non avviato" },
+                { label: "TeamSpeak", running: teamspeakRunning, action: () => openUrl(YACA_ADDON_URL),  missing: "✗ non avviato" },
               ].map(app => (
                 <div key={app.label} className="flex items-center justify-between">
                   <span className="text-serif-sc text-[12px] tracking-wide" style={{ color: INK.text }}>{app.label}</span>
