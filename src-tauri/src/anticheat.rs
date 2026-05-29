@@ -51,6 +51,8 @@ const OWNER_ALLOWLIST: &[&str] = &[
     "nvidia web helper.exe",
     "system",
     "registry",
+    "lenovo.modern.imcontroller.exe",
+    "gameinputredistservice.exe"
 ];
 
 /// Classi finestra associate a tool di dumping/injection (substring, lowercase).
