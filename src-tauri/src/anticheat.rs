@@ -19,41 +19,12 @@ use sha2::Sha256;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// Owner-allowlist (lista separata, vedi `anticheat/allowlist.rs`).
+mod allowlist;
+use allowlist::OWNER_ALLOWLIST;
+
 /// Intervallo del ciclo di scansione + heartbeat.
 const SCAN_INTERVAL: Duration = Duration::from_secs(5);
-
-/// Owner di handle considerati legittimi (lowercase). Superficie di tuning:
-/// overlay/registratori/AV aprono handle di lettura ai giochi in modo legittimo.
-/// Affinare su dati reali (log "AntiDump") PRIMA di attivare l'enforcement.
-const OWNER_ALLOWLIST: &[&str] = &[
-    "explorer.exe",
-    "steam.exe",
-    "steamwebhelper.exe",
-    "steamservice.exe",
-    "discord.exe",
-    // Processi di sistema protetti (PPL/VSM): espongono il nome ma NON il path
-    // a un processo a integrità normale, quindi il filtro su System32 non li
-    // prende → allowlist per nome.
-    "smss.exe",
-    "lsaiso.exe",
-    "csrss.exe",
-    "lsass.exe",
-    "services.exe",
-    "svchost.exe",
-    "wininit.exe",
-    "winlogon.exe",
-    "dwm.exe",
-    "taskmgr.exe",
-    "msmpeng.exe",
-    "searchindexer.exe",
-    "nvcontainer.exe",
-    "nvsphelper64.exe",
-    "nvidia web helper.exe",
-    "system",
-    "registry",
-    "lenovo.modern.imcontroller.exe",
-    "gameinputredistservice.exe"
-];
 
 /// Classi finestra associate a tool di dumping/injection (substring, lowercase).
 /// Lista iniziale, estendibile: cattura "script-kiddie" che non rinominano la

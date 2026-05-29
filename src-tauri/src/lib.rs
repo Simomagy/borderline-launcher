@@ -131,17 +131,75 @@ fn launch_game() -> Result<(), String> {
     spawn_detached("redm://connect/rmabxvx")
 }
 
-/// Avvia TeamSpeak (TS5 prima, TS3 64/32-bit poi). TeamSpeak non espone uno
-/// URI scheme stabile per "apri l'app", quindi cerchiamo l'eseguibile nei path
-/// di installazione standard. Lancia il primo che esiste; errore se nessuno.
+/// Cerca l'eseguibile di TeamSpeak nel registro (uninstall entries con
+/// DisplayName "TeamSpeak*"). È la fonte autorevole: copre installazioni
+/// per-utente (%LOCALAPPDATA%\Programs) e cartelle non standard, che i path
+/// fissi mancano. `DisplayIcon` punta già all'exe (es. "...\ts3client_win64.exe,0");
+/// in fallback uso `InstallLocation` + nome eseguibile noto.
+#[cfg(target_os = "windows")]
+fn teamspeak_from_registry() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    let uninstall_roots = [
+        (HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ];
+
+    for (root, base) in uninstall_roots {
+        let Ok(uninstall) = RegKey::predef(root).open_subkey(base) else { continue };
+        for sub in uninstall.enum_keys().flatten() {
+            let Ok(entry) = uninstall.open_subkey(&sub) else { continue };
+            let name: String = entry.get_value("DisplayName").unwrap_or_default();
+            if !name.contains("TeamSpeak") {
+                continue;
+            }
+            // DisplayIcon: "C:\...\ts3client_win64.exe,0" → togli l'indice icona e gli apici.
+            if let Ok(icon) = entry.get_value::<String, _>("DisplayIcon") {
+                let exe = icon.split(',').next().unwrap_or("").trim().trim_matches('"');
+                let p = PathBuf::from(exe);
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+            if let Ok(loc) = entry.get_value::<String, _>("InstallLocation") {
+                for exe in ["TeamSpeak.exe", "ts3client_win64.exe", "ts3client_win32.exe"] {
+                    let p = PathBuf::from(&loc).join(exe);
+                    if p.is_file() {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Avvia TeamSpeak. TeamSpeak non espone uno URI scheme stabile per "apri
+/// l'app", quindi risolviamo l'eseguibile: prima dal registro (qualsiasi
+/// cartella d'installazione), poi dai path fissi noti come fallback. Lancia il
+/// primo che esiste; errore se nessuno.
 #[tauri::command]
 fn launch_teamspeak() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::path::PathBuf;
+
+        if let Some(path) = teamspeak_from_registry() {
+            return spawn_detached(&path.to_string_lossy());
+        }
+
+        // Fallback su path fissi (TS5 + TS3 64/32-bit), sia per-utente
+        // (%LOCALAPPDATA%\Programs) sia per-macchina (%ProgramFiles%).
         let candidates: Vec<PathBuf> = [
             std::env::var_os("LOCALAPPDATA")
                 .map(|p| PathBuf::from(p).join(r"Programs\TeamSpeak 5\TeamSpeak.exe")),
+            std::env::var_os("LOCALAPPDATA")
+                .map(|p| PathBuf::from(p).join(r"Programs\TeamSpeak 3 Client\ts3client_win64.exe")),
+            std::env::var_os("LOCALAPPDATA")
+                .map(|p| PathBuf::from(p).join(r"Programs\TeamSpeak 3 Client\ts3client_win32.exe")),
             std::env::var_os("ProgramFiles")
                 .map(|p| PathBuf::from(p).join(r"TeamSpeak 3 Client\ts3client_win64.exe")),
             std::env::var_os("ProgramFiles(x86)")

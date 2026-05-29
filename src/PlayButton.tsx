@@ -104,7 +104,7 @@ export function PlayButton({ canPlay, label, onClick }: PlayButtonProps) {
       {/* Etichetta */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
         <span
-          className={`text-display ${canPlay ? "text-[45px] gap-6" : "text-2xl gap-2"} tracking-[.22em] uppercase select-none flex items-center`}
+          className={`text-display ${canPlay ? "text-[45px] gap-6" : "text-xl gap-2"} tracking-[.22em] uppercase select-none flex items-center`}
           style={{ color: canPlay ? "#c9a14a" : "#ed2939", textShadow: canPlay ? "0 0 12px rgba(10, 7, 6,.88)" : "0 0 4px rgba(10,7,6,.88)" }}
         >
           {canPlay ? <Play size={45} /> : <X size={24} />}{label}

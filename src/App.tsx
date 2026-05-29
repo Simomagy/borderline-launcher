@@ -367,7 +367,7 @@ export default function App() {
 
   const canPlay =
     !redmRunning &&
-    serverStatus === "online" && steamRunning &&
+    serverStatus === "online" && steamRunning && teamspeakRunning && discordRunning &&
     (accessStatus === "allowed" || (accessStatus === "banned" && banInfo?.ban_type === "temporary")) &&
     acStatus.authenticated && !acStatus.violation;
 
@@ -376,6 +376,8 @@ export default function App() {
     if (serverStatus === "loading")  return "Connessione…";
     if (serverStatus === "offline")  return "Server Offline";
     if (!steamRunning)               return "Steam richiesto";
+    if (!teamspeakRunning)           return "TeamSpeak richiesto";
+    if (!discordRunning)             return "Discord richiesto";
     if (accessStatus === "not_allowlisted") return "Accesso Negato";
     if (accessStatus === "banned" && banInfo?.ban_type === "permanent") return "Bannato";
     if (accessStatus === "loading")  return "Verifica…";
@@ -420,7 +422,7 @@ export default function App() {
               style={{ background: "rgba(201,161,74,.10)", animation: "emporio-glow 2.5s ease-in-out infinite" }}
             >
               <span className="w-1 h-1 rounded-full bg-gold-400 animate-pulse flex-shrink-0" />
-              <span className="text-mono text-[7px] uppercase tracking-[.28em] text-gold-400">v{updateVersion}</span>
+              <span className="text-mono text-[7px] uppercase tracking-[.28em] text-gold-400">AGGIORNAMENTO DISPONIBILE</span>
             </button>
           )}
           <div className="flex items-center gap-0.5">
@@ -596,7 +598,13 @@ export default function App() {
                       {!steamRunning && serverStatus === "online" && (
                         <span className="text-mono text-[8px] text-blood-500/60 uppercase tracking-wider">Steam non rilevato — richiesto per giocare</span>
                       )}
-                      {steamRunning && serverStatus === "online" && accessStatus === "allowed" && !acStatus.authenticated && (
+                      {steamRunning && !teamspeakRunning && serverStatus === "online" && (
+                        <span className="text-mono text-[8px] text-blood-500/60 uppercase tracking-wider">TeamSpeak non rilevato — richiesto per giocare</span>
+                      )}
+                      {steamRunning && teamspeakRunning && !discordRunning && serverStatus === "online" && (
+                        <span className="text-mono text-[8px] text-blood-500/60 uppercase tracking-wider">Discord non rilevato — richiesto per giocare</span>
+                      )}
+                      {steamRunning && teamspeakRunning && discordRunning && serverStatus === "online" && accessStatus === "allowed" && !acStatus.authenticated && (
                         <span className="text-mono text-[8px] text-gold-400/60 uppercase tracking-wider">Autenticazione del Launcher in corso…</span>
                       )}
                     </>
@@ -723,7 +731,7 @@ function UpdateModal({
           {/* header */}
           <PaperHeader no="Dispaccio dalla Centrale" title="Telegramma" />
           <div className="flex items-baseline justify-center gap-2 -mt-1">
-            <span className="text-serif-sc text-[12px]" style={{ color: INK.head }}>Nuova edizione</span>
+            <span className="text-serif-sc text-[24px]" style={{ color: INK.head }}>Nuova versione</span>
             <span className="text-display text-[34px] leading-none" style={{ color: INK.red }}>v{version}</span>
           </div>
 
@@ -753,7 +761,7 @@ function UpdateModal({
             <div className="flex items-center gap-3 pt-1">
               <button
                 onClick={onUpdate}
-                className="py-3 text-display text-[20px] tracking-[.18em] uppercase cursor-pointer transition-colors"
+                className="py-3 text-display text-[20px] tracking-[.18em] uppercase cursor-pointer transition-colors w-full"
                 style={{ color: "#f3e2bd", background: INK.red, boxShadow: "0 3px 0 rgba(60,18,8,.5)" }}
               >
                 Aggiorna Ora
