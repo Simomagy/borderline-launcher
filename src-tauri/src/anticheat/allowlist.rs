@@ -15,11 +15,11 @@ pub const OWNER_ALLOWLIST: &[&str] = &[
     "steamwebhelper.exe",
     "steamservice.exe",
     "discord.exe",
-    // Utility OEM Lenovo: vivono in Program Files (path leggibile → non filtrate
-    // da is_system_path) e aprono handle ai processi in foreground.
     "lenovo.modern.imcontroller.exe",
     "gameinputredistservice.exe",
     "lenovovantageservice.exe",
+    "fnplicensingservice64.exe",
+    "oplus_remote_service.exe",
     // Processi di sistema protetti (PPL/VSM): espongono il nome ma NON il path a
     // un processo a integrità normale, quindi il filtro su System32 non li prende
     // → allowlist per nome.
