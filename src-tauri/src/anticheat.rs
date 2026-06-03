@@ -49,8 +49,9 @@ struct Suspect {
 pub struct AntiCheatState {
     /// Steam hex risolto dal frontend; finché è `None` non si manda heartbeat.
     pub steam_hex: Option<String>,
-    /// Violazione corrente (sticky: una volta rilevata resta per la sessione).
-    pub violation: Option<Violation>,
+    /// Violazioni correnti (sticky: accumulate per la sessione, dedup per
+    /// signature). Più processi sospetti possono coesistere.
+    pub violations: Vec<Violation>,
     /// Nonce corrente del challenge rotante (aggiornato dalla risposta heartbeat).
     pub nonce: String,
     /// Esito dell'ultima verifica challenge lato server (heartbeat `trusted`).
@@ -345,9 +346,23 @@ fn send_heartbeat(client: &reqwest::blocking::Client, handle: &AntiCheatHandle) 
             Some(s) => s.clone(),
             None => return, // identità non ancora nota → niente heartbeat
         };
-        let (status, reason, signature) = match &st.violation {
-            Some(v) => ("violation", v.reason.clone(), v.signature.clone()),
-            None => ("ok", String::new(), String::new()),
+        let (status, reason, signature) = if st.violations.is_empty() {
+            ("ok", String::new(), String::new())
+        } else {
+            // Lista completa in un solo header: il server logga tutti i processi.
+            let reason = st
+                .violations
+                .iter()
+                .map(|v| v.reason.clone())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            let signature = st
+                .violations
+                .iter()
+                .map(|v| v.signature.clone())
+                .collect::<Vec<_>>()
+                .join(";");
+            ("violation", reason, signature)
         };
         (steam, status, reason, signature, st.nonce.clone())
     };
@@ -413,14 +428,17 @@ pub fn spawn(handle: AntiCheatHandle) {
                     suspects.extend(scan_window_classes(&sys));
                 }
 
-                if let Some(s) = suspects.into_iter().next() {
+                if !suspects.is_empty() {
                     let mut st = handle.0.lock().unwrap();
-                    // Sticky: non sovrascrivere una violazione già registrata.
-                    if st.violation.is_none() {
-                        st.violation = Some(Violation {
-                            reason: s.reason,
-                            signature: s.signature,
-                        });
+                    // Sticky: accumula ogni sospetto senza duplicare (per signature),
+                    // così la lista cresce man mano che più processi vengono rilevati.
+                    for s in suspects {
+                        if !st.violations.iter().any(|v| v.signature == s.signature) {
+                            st.violations.push(Violation {
+                                reason: s.reason,
+                                signature: s.signature,
+                            });
+                        }
                     }
                 }
             }

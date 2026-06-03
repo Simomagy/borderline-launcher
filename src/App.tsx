@@ -23,6 +23,7 @@ interface BanInfo {
 }
 type ServerStatus  = "loading" | "online" | "offline";
 type AccessStatus  = "loading" | "allowed" | "not_allowlisted" | "banned" | "error" | "unknown";
+interface AcViolation { reason: string; signature: string; }
 
 const win = () => getCurrentWindow();
 
@@ -158,9 +159,11 @@ export default function App() {
   const [accessStatus, setAccessStatus] = useState<AccessStatus>("loading");
   const [banInfo, setBanInfo]           = useState<BanInfo | null>(null);
   // Stato anti-cheat: authenticated = challenge verificato dal server (client integro);
-  // violation = dumper rilevato. GIOCA è bloccato finché non è authenticated && !violation.
-  const [acStatus, setAcStatus] = useState<{ authenticated: boolean; violation: boolean; reason?: string }>({ authenticated: false, violation: false });
+  // violations = processi che leggono la memoria di RedM (report-only in taratura).
+  const [acStatus, setAcStatus] = useState<{ authenticated: boolean; violation: boolean; reason?: string; violations: AcViolation[] }>({ authenticated: false, violation: false, violations: [] });
   const [playError, setPlayError] = useState<string | null>(null);
+  const [showAcModal, setShowAcModal] = useState(false);
+  const acPrevCountRef = useRef(0);
 
   const [showSplash, setShowSplash] = useState(true);
   const [splashExiting, setSplashExiting] = useState(false);
@@ -227,10 +230,19 @@ export default function App() {
   // Polling stato anti-cheat (autenticazione challenge + rilevazione dumper).
   const checkAnticheat = useCallback(async () => {
     try {
-      const r = await invoke<{ authenticated: boolean; violation: boolean; reason?: string }>("get_anticheat_status");
-      setAcStatus({ authenticated: !!r.authenticated, violation: !!r.violation, reason: r.reason });
+      const r = await invoke<{ authenticated: boolean; violation: boolean; reason?: string; violations?: AcViolation[] }>("get_anticheat_status");
+      setAcStatus({ authenticated: !!r.authenticated, violation: !!r.violation, reason: r.reason, violations: r.violations ?? [] });
     } catch { /* mantieni stato corrente */ }
   }, []);
+
+  // Apri il popup immediatamente appena viene rilevato un nuovo processo sospetto
+  // (alla prima rilevazione e ogni volta che la lista cresce). La scansione gira
+  // anche prima di premere GIOCA, quindi se RedM è già aperto compare subito.
+  useEffect(() => {
+    const n = acStatus.violations.length;
+    if (n > acPrevCountRef.current) setShowAcModal(true);
+    acPrevCountRef.current = n;
+  }, [acStatus.violations.length]);
 
   const checkForUpdates = useCallback(async () => {
     try {
@@ -365,11 +377,15 @@ export default function App() {
     return () => { clearInterval(h); clearInterval(p); clearInterval(a); clearInterval(d); clearInterval(c); clearInterval(u); unlisten?.(); };
   }, [initializing, fetchHealth, checkProcesses, recheckAccess, steamHex, checkForUpdates, updatePresence, checkAnticheat]);
 
+  // NB: la violazione anti-dump è in fase di taratura (report-only, come il
+  // server con Shared.AntiDumpEnforce=false). Viene segnalata via heartbeat ma
+  // NON blocca GIOCA: si mostra solo come avviso col nome del processo, così si
+  // affina OWNER_ALLOWLIST sui dati reali prima di attivare l'enforcement.
   const canPlay =
     !redmRunning &&
     serverStatus === "online" && steamRunning && teamspeakRunning && discordRunning &&
     (accessStatus === "allowed" || (accessStatus === "banned" && banInfo?.ban_type === "temporary")) &&
-    acStatus.authenticated && !acStatus.violation;
+    acStatus.authenticated;
 
   const playLabel = () => {
     if (redmRunning)                 return "In gioco";
@@ -381,7 +397,6 @@ export default function App() {
     if (accessStatus === "not_allowlisted") return "Accesso Negato";
     if (accessStatus === "banned" && banInfo?.ban_type === "permanent") return "Bannato";
     if (accessStatus === "loading")  return "Verifica…";
-    if (acStatus.violation)          return "Bloccato";
     if (!acStatus.authenticated)     return "Autenticazione…";
     return "Gioca";
   };
@@ -564,10 +579,10 @@ export default function App() {
                   onClick={async () => {
                     if (!canPlay || !steamHex) return;
                     setPlayError(null);
-                    // 1) Ricontrolla integrità/violazione appena prima dell'avvio.
+                    // 1) Ricontrolla l'autenticazione appena prima dell'avvio.
+                    //    L'anti-dump è report-only in taratura: non blocca qui.
                     try {
                       const ac = await invoke<{ authenticated: boolean; violation: boolean }>("get_anticheat_status");
-                      if (ac.violation)        { setPlayError("Anomalia di sicurezza rilevata. Riavvia il Launcher."); return; }
                       if (!ac.authenticated)   { setPlayError("Autenticazione in corso, riprova tra un istante."); checkAnticheat(); return; }
                     } catch { setPlayError("Verifica di sicurezza non riuscita."); return; }
                     // 2) Autorizza l'ingresso e verifica l'esito: NIENTE avvio se fallisce.
@@ -586,7 +601,12 @@ export default function App() {
                   {playError ? (
                     <span className="text-mono text-[8px] text-blood-500/80 uppercase tracking-wider">{playError}</span>
                   ) : acStatus.violation ? (
-                    <span className="text-mono text-[8px] text-blood-500/80 uppercase tracking-wider">Anomalia di sicurezza · riavvia il Launcher</span>
+                    <button
+                      onClick={() => setShowAcModal(true)}
+                      className="text-mono text-[8px] text-gold-400/70 hover:text-gold-300 uppercase tracking-wider cursor-pointer underline-offset-2 hover:underline transition-colors"
+                    >
+                      Anti-dump (report-only): {acStatus.violations.length} {acStatus.violations.length === 1 ? "processo" : "processi"} · dettagli
+                    </button>
                   ) : (
                     <>
                       {accessStatus === "banned" && banInfo?.ban_type === "temporary" && (
@@ -624,6 +644,14 @@ export default function App() {
             progress={updateProgress}
             onUpdate={doUpdate}
             onDismiss={() => setShowUpdateModal(false)}
+          />
+        )}
+
+        {/* ══ ANTI-DUMP MODAL ══ */}
+        {showAcModal && acStatus.violations.length > 0 && (
+          <AntiDumpModal
+            violations={acStatus.violations}
+            onDismiss={() => setShowAcModal(false)}
           />
         )}
 
@@ -768,6 +796,66 @@ function UpdateModal({
               </button>
             </div>
           )}
+        </div>
+      </Poster>
+    </div>
+  );
+}
+
+// ── AntiDumpModal ───────────────────────────────────────────────────────────────
+
+function AntiDumpModal({
+  violations,
+  onDismiss,
+}: {
+  violations: AcViolation[];
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      className="absolute inset-0 z-50 flex items-center justify-center"
+      style={{ background: "rgba(4,3,2,.9)", backdropFilter: "blur(10px)" }}
+    >
+      <Poster width={520}>
+        <div className="flex flex-col gap-4">
+          <PaperHeader no="Vedetta Anti-Dump" title="Avviso di Sicurezza" />
+          <h2 className="text-display text-[26px] leading-none text-center" style={{ color: INK.head }}>
+            {violations.length} {violations.length === 1 ? "processo sospetto" : "processi sospetti"}
+          </h2>
+
+          <PaperRule double />
+
+          <p className="text-serif-sc text-[12px] leading-relaxed text-center" style={{ color: INK.soft }}>
+            Questi processi leggono la memoria di RedM. Sei in fase di taratura (report-only):
+            non bloccano il gioco, vengono solo segnalati. Se sono legittimi (overlay, AV, cattura),
+            aggiungili a <span style={{ color: INK.text }}>OWNER_ALLOWLIST</span>.
+          </p>
+
+          <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto pr-1">
+            {violations.map((v, i) => (
+              <div
+                key={v.signature + i}
+                className="flex items-start gap-2 px-3 py-2"
+                style={{ background: "rgba(60,38,14,.12)", boxShadow: "inset 0 0 0 1px rgba(230,164,92,.18)" }}
+              >
+                <span className="text-[10px] mt-0.5 flex-shrink-0" style={{ color: INK.red }}>●</span>
+                <div className="flex flex-col gap-0.5 min-w-0">
+                  <span className="text-serif-sc text-[12px] leading-snug break-words" style={{ color: INK.text }}>{v.reason}</span>
+                  <span className="text-mono text-[8px] uppercase tracking-wider break-all" style={{ color: INK.soft }}>{v.signature}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-3 pt-1">
+            <button
+              onClick={onDismiss}
+              className="py-3 text-display text-[18px] tracking-[.18em] uppercase cursor-pointer transition-colors w-full"
+              style={{ color: "#f3e2bd", background: INK.red, boxShadow: "0 3px 0 rgba(60,18,8,.5)" }}
+            >
+              Ho capito
+            </button>
+          </div>
         </div>
       </Poster>
     </div>
