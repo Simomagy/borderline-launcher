@@ -811,6 +811,28 @@ function AntiDumpModal({
   violations: AcViolation[];
   onDismiss: () => void;
 }) {
+  const [copied, setCopied] = useState(false);
+
+  // Nomi processo (solo handle esterni → OWNER_ALLOWLIST è per nome eseguibile),
+  // dedup, formattati come righe Rust pronte da incollare nell'array.
+  const allowlistLines = Array.from(
+    new Set(
+      violations
+        .filter(v => v.signature.startsWith("ExternalHandle:"))
+        .map(v => v.signature.slice("ExternalHandle:".length).trim().toLowerCase())
+        .filter(Boolean)
+    )
+  ).map(name => `    "${name}",`);
+
+  const copyAllowlist = async () => {
+    if (allowlistLines.length === 0) return;
+    try {
+      await navigator.clipboard.writeText(allowlistLines.join("\n"));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch { /* clipboard non disponibile */ }
+  };
+
   return (
     <div
       className="absolute inset-0 z-50 flex items-center justify-center"
@@ -848,6 +870,18 @@ function AntiDumpModal({
           </div>
 
           <div className="flex items-center gap-3 pt-1">
+            <button
+              onClick={copyAllowlist}
+              disabled={allowlistLines.length === 0}
+              title="Copia i processi nel formato OWNER_ALLOWLIST"
+              className="group flex items-center justify-center gap-2 py-3 px-4 text-mono text-[10px] uppercase tracking-[.14em] cursor-pointer transition-colors flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ color: copied ? INK.green : INK.text, boxShadow: "inset 0 0 0 1px rgba(230,164,92,.4)" }}
+            >
+              {copied
+                ? <Check size={12} style={{ color: INK.green }} />
+                : <Copy size={12} className="opacity-70 group-hover:opacity-100 transition-opacity" />}
+              {copied ? "Copiato!" : `Copia allowlist (${allowlistLines.length})`}
+            </button>
             <button
               onClick={onDismiss}
               className="py-3 text-display text-[18px] tracking-[.18em] uppercase cursor-pointer transition-colors w-full"
