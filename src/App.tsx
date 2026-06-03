@@ -377,15 +377,13 @@ export default function App() {
     return () => { clearInterval(h); clearInterval(p); clearInterval(a); clearInterval(d); clearInterval(c); clearInterval(u); unlisten?.(); };
   }, [initializing, fetchHealth, checkProcesses, recheckAccess, steamHex, checkForUpdates, updatePresence, checkAnticheat]);
 
-  // NB: la violazione anti-dump è in fase di taratura (report-only, come il
-  // server con Shared.AntiDumpEnforce=false). Viene segnalata via heartbeat ma
-  // NON blocca GIOCA: si mostra solo come avviso col nome del processo, così si
-  // affina OWNER_ALLOWLIST sui dati reali prima di attivare l'enforcement.
+  // GIOCA è bloccato se un programma non consentito sta leggendo la memoria del
+  // gioco: il player deve chiuderlo e riavviare prima di poter entrare.
   const canPlay =
     !redmRunning &&
     serverStatus === "online" && steamRunning && teamspeakRunning && discordRunning &&
     (accessStatus === "allowed" || (accessStatus === "banned" && banInfo?.ban_type === "temporary")) &&
-    acStatus.authenticated;
+    acStatus.authenticated && !acStatus.violation;
 
   const playLabel = () => {
     if (redmRunning)                 return "In gioco";
@@ -397,6 +395,7 @@ export default function App() {
     if (accessStatus === "not_allowlisted") return "Accesso Negato";
     if (accessStatus === "banned" && banInfo?.ban_type === "permanent") return "Bannato";
     if (accessStatus === "loading")  return "Verifica…";
+    if (acStatus.violation)          return "Bloccato";
     if (!acStatus.authenticated)     return "Autenticazione…";
     return "Gioca";
   };
@@ -579,10 +578,10 @@ export default function App() {
                   onClick={async () => {
                     if (!canPlay || !steamHex) return;
                     setPlayError(null);
-                    // 1) Ricontrolla l'autenticazione appena prima dell'avvio.
-                    //    L'anti-dump è report-only in taratura: non blocca qui.
+                    // 1) Ricontrolla integrità/programmi non consentiti appena prima dell'avvio.
                     try {
                       const ac = await invoke<{ authenticated: boolean; violation: boolean }>("get_anticheat_status");
+                      if (ac.violation)        { checkAnticheat(); setShowAcModal(true); return; }
                       if (!ac.authenticated)   { setPlayError("Autenticazione in corso, riprova tra un istante."); checkAnticheat(); return; }
                     } catch { setPlayError("Verifica di sicurezza non riuscita."); return; }
                     // 2) Autorizza l'ingresso e verifica l'esito: NIENTE avvio se fallisce.
@@ -603,9 +602,9 @@ export default function App() {
                   ) : acStatus.violation ? (
                     <button
                       onClick={() => setShowAcModal(true)}
-                      className="text-mono text-[8px] text-gold-400/70 hover:text-gold-300 uppercase tracking-wider cursor-pointer underline-offset-2 hover:underline transition-colors"
+                      className="text-mono text-[8px] text-blood-500/80 hover:text-blood-400 uppercase tracking-wider cursor-pointer underline-offset-2 hover:underline transition-colors"
                     >
-                      Anti-dump (report-only): {acStatus.violations.length} {acStatus.violations.length === 1 ? "processo" : "processi"} · dettagli
+                      {acStatus.violations.length} {acStatus.violations.length === 1 ? "programma blocca" : "programmi bloccano"} l'accesso · dettagli
                     </button>
                   ) : (
                     <>
@@ -813,21 +812,29 @@ function AntiDumpModal({
 }) {
   const [copied, setCopied] = useState(false);
 
-  // Nomi processo (solo handle esterni → OWNER_ALLOWLIST è per nome eseguibile),
-  // dedup, formattati come righe Rust pronte da incollare nell'array.
-  const allowlistLines = Array.from(
-    new Set(
-      violations
-        .filter(v => v.signature.startsWith("ExternalHandle:"))
-        .map(v => v.signature.slice("ExternalHandle:".length).trim().toLowerCase())
-        .filter(Boolean)
-    )
-  ).map(name => `    "${name}",`);
+  // Estrae il nome del programma dalla signature interna senza esporre i
+  // dettagli di rilevazione: "<tipo>:<nome>" → "<nome>". Dedup per nome.
+  const programs = (() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const v of violations) {
+      const idx = v.signature.indexOf(":");
+      const name = (idx >= 0 ? v.signature.slice(idx + 1) : v.signature).trim().toLowerCase();
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      out.push(name);
+    }
+    return out;
+  })();
 
-  const copyAllowlist = async () => {
-    if (allowlistLines.length === 0) return;
+  // Report da allegare a un ticket di assistenza, già nel formato pronto per
+  // l'allowlist (lo staff lo incolla direttamente; il player non deve capirlo).
+  const ticketReport = programs.map(p => `    "${p}",`).join("\n");
+
+  const copyReport = async () => {
+    if (programs.length === 0) return;
     try {
-      await navigator.clipboard.writeText(allowlistLines.join("\n"));
+      await navigator.clipboard.writeText(ticketReport);
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
     } catch { /* clipboard non disponibile */ }
@@ -840,47 +847,44 @@ function AntiDumpModal({
     >
       <Poster width={520}>
         <div className="flex flex-col gap-4">
-          <PaperHeader no="Vedetta Anti-Dump" title="Avviso di Sicurezza" />
+          <PaperHeader no="Controllo di Sicurezza" title="Accesso Bloccato" />
           <h2 className="text-display text-[26px] leading-none text-center" style={{ color: INK.head }}>
-            {violations.length} {violations.length === 1 ? "processo sospetto" : "processi sospetti"}
+            {programs.length} {programs.length === 1 ? "programma non consentito" : "programmi non consentiti"}
           </h2>
 
           <PaperRule double />
 
           <p className="text-serif-sc text-[12px] leading-relaxed text-center" style={{ color: INK.soft }}>
-            Questi processi leggono la memoria di RedM. Sei in fase di taratura (report-only):
-            non bloccano il gioco, vengono solo segnalati. Se sono legittimi (overlay, AV, cattura),
-            aggiungili a <span style={{ color: INK.text }}>OWNER_ALLOWLIST</span>.
+            I seguenti programmi non permettono l'accesso a Borderline. Chiudili e riavvia il gioco
+            per poter entrare. Se pensi si tratti di un errore, apri un ticket di assistenza e allega
+            l'elenco qui sotto con il pulsante <span style={{ color: INK.text }}>Copia</span>.
           </p>
 
           <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto pr-1">
-            {violations.map((v, i) => (
+            {programs.map((p, i) => (
               <div
-                key={v.signature + i}
-                className="flex items-start gap-2 px-3 py-2"
+                key={p + i}
+                className="flex items-center gap-2 px-3 py-2"
                 style={{ background: "rgba(60,38,14,.12)", boxShadow: "inset 0 0 0 1px rgba(230,164,92,.18)" }}
               >
-                <span className="text-[10px] mt-0.5 flex-shrink-0" style={{ color: INK.red }}>●</span>
-                <div className="flex flex-col gap-0.5 min-w-0">
-                  <span className="text-serif-sc text-[12px] leading-snug break-words" style={{ color: INK.text }}>{v.reason}</span>
-                  <span className="text-mono text-[8px] uppercase tracking-wider break-all" style={{ color: INK.soft }}>{v.signature}</span>
-                </div>
+                <span className="text-[10px] flex-shrink-0" style={{ color: INK.red }}>●</span>
+                <span className="text-serif-sc text-[13px] leading-snug break-all" style={{ color: INK.text }}>{p}</span>
               </div>
             ))}
           </div>
 
           <div className="flex items-center gap-3 pt-1">
             <button
-              onClick={copyAllowlist}
-              disabled={allowlistLines.length === 0}
-              title="Copia i processi nel formato OWNER_ALLOWLIST"
+              onClick={copyReport}
+              disabled={programs.length === 0}
+              title="Copia l'elenco da allegare al ticket di assistenza"
               className="group flex items-center justify-center gap-2 py-3 px-4 text-mono text-[10px] uppercase tracking-[.14em] cursor-pointer transition-colors flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
               style={{ color: copied ? INK.green : INK.text, boxShadow: "inset 0 0 0 1px rgba(230,164,92,.4)" }}
             >
               {copied
                 ? <Check size={12} style={{ color: INK.green }} />
                 : <Copy size={12} className="opacity-70 group-hover:opacity-100 transition-opacity" />}
-              {copied ? "Copiato!" : `Copia allowlist (${allowlistLines.length})`}
+              {copied ? "Copiato!" : "Copia per assistenza"}
             </button>
             <button
               onClick={onDismiss}
