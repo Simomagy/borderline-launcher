@@ -146,6 +146,18 @@ pub const OWNER_ALLOWLIST: &[&str] = &[
     "chxsmartscreen.exe",
     "systemsettings.exe",
     "gameoverlayui64.exe",
+    "borderline-launcher.exe",
+    "trustedinstaller.exe",
+    "inno_updater.exe",
+    "updater.exe",
+    "git.exe",
+    "git-remote-https.exe",
+    "sh.exe",
+    "git-credential-manager.exe",
+    "pwsh.exe",
+    "windowsterminal.exe",
+    "rustc.exe",
+    "tsc.exe",
     // Processi di sistema protetti (PPL/VSM): espongono il nome ma NON il path a
     // un processo a integrità normale, quindi il filtro su System32 non li prende
     // → allowlist per nome.
