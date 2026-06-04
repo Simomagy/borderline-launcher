@@ -23,6 +23,10 @@ const DISCORD_CLIENT_ID: &str = env!("DISCORD_CLIENT_ID");
 // Segreto condiviso col bridge per il challenge/response HMAC (anti-tamper).
 pub(crate) const LAUNCHER_HMAC_SECRET: &str = env!("LAUNCHER_HMAC_SECRET");
 
+// User-Agent HTTP riconoscibile: un client senza UA (default `reqwest/x.y`) è
+// uno dei tratti che insospettisce l'euristica degli antivirus.
+pub(crate) const USER_AGENT: &str = concat!("BorderlineLauncher/", env!("CARGO_PKG_VERSION"));
+
 // ── Discord Rich Presence — configurazione ──────────────────────────────────
 // Gli asset (key 'logo') vanno caricati nel Developer Portal Discord:
 //   Rich Presence → Art Assets. %players è sostituito a runtime con
@@ -267,6 +271,7 @@ async fn get_steam_profile(id64: String) -> Result<String, String> {
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
+        .user_agent(USER_AGENT)
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -289,6 +294,7 @@ async fn check_player_access(steam_hex: String) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
         .danger_accept_invalid_certs(true)
+        .user_agent(USER_AGENT)
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -334,6 +340,7 @@ async fn authorize_entry(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
         .danger_accept_invalid_certs(true)
+        .user_agent(USER_AGENT)
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -362,6 +369,7 @@ async fn fetch_bridge(endpoint: String) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
         .danger_accept_invalid_certs(true)
+        .user_agent(USER_AGENT)
         .build()
         .map_err(|e| e.to_string())?;
 

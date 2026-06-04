@@ -1,9 +1,10 @@
 //! Anti-Dump watchdog (Ring 3 / user-mode).
 //!
-//! Un thread di background (vedi [`spawn`]) gira ogni ~5s mentre il gioco è
-//! aperto e cerca processi terzi che leggono la memoria di `redm.exe` (dumper)
-//! oppure finestre note di tool di dumping. Le rilevazioni vengono segnalate al
-//! `pry-bridge` tramite l'heartbeat (header `status`/`reason`/`signature`).
+//! Un thread di background (vedi [`spawn`]) manda un heartbeat al `pry-bridge`
+//! ogni ~5s e, più di rado (~30s), scansiona i processi terzi che leggono la
+//! memoria di `redm.exe` (dumper) o le finestre note di tool di dumping. Le
+//! rilevazioni vengono segnalate tramite l'heartbeat (header
+//! `status`/`reason`/`signature`).
 //!
 //! Modalità **report-only**: il launcher non chiude il gioco; è il server a
 //! decidere (log, oppure kick se `Shared.AntiDumpEnforce`). L'heartbeat porta
@@ -23,8 +24,18 @@ use std::time::Duration;
 mod allowlist;
 use allowlist::OWNER_ALLOWLIST;
 
-/// Intervallo del ciclo di scansione + heartbeat.
-const SCAN_INTERVAL: Duration = Duration::from_secs(5);
+/// Cadenza dell'heartbeat verso il bridge: tiene viva la presenza e il
+/// binding-kick. DEVE restare ben sotto `LauncherHeartbeatTimeout`/`PresenceTTL`
+/// lato bridge, altrimenti i giocatori in-game vengono espulsi.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Cadenza della scansione anti-dump (handle table globale + finestre).
+/// Disaccoppiata e più rada dell'heartbeat: lo scan globale è la parte
+/// "rumorosa" verso l'euristica degli antivirus e non serve ad ogni heartbeat.
+/// Le violazioni sono sticky: una volta trovate vengono riportate ad ogni
+/// heartbeat, quindi alzare questo intervallo aumenta solo la latenza di
+/// rilevazione (report-only), non la copertura.
+const SCAN_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Classi finestra associate a tool di dumping/injection (substring, lowercase).
 /// Lista iniziale, estendibile: cattura "script-kiddie" che non rinominano la
@@ -407,37 +418,49 @@ pub fn spawn(handle: AntiCheatHandle) {
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(8))
             .danger_accept_invalid_certs(true)
+            .user_agent(crate::USER_AGENT)
             .build()
             .ok();
 
+        let mut last_scan: Option<std::time::Instant> = None;
+
         loop {
-            let mut sys = sysinfo::System::new();
-            sys.refresh_processes(sysinfo::ProcessesToUpdate::All, false);
-            let redm_pids = find_redm_pids(&sys);
+            // Lo scan pesante (refresh processi + handle table globale + finestre)
+            // gira ogni SCAN_INTERVAL, non ad ogni heartbeat: è la parte che
+            // "suona" da dumper agli antivirus. L'heartbeat sotto resta a
+            // HEARTBEAT_INTERVAL per non far scattare il binding-kick.
+            let scan_due = last_scan.map_or(true, |t| t.elapsed() >= SCAN_INTERVAL);
+            if scan_due {
+                last_scan = Some(std::time::Instant::now());
 
-            if !redm_pids.is_empty() {
-                let mut suspects = Vec::new();
-                #[cfg(windows)]
-                {
-                    suspects.extend(win::scan_external_handles(&sys, &redm_pids));
-                    suspects.extend(win::scan_window_classes(&sys));
-                }
-                #[cfg(not(windows))]
-                {
-                    suspects.extend(scan_external_handles(&sys, &redm_pids));
-                    suspects.extend(scan_window_classes(&sys));
-                }
+                let mut sys = sysinfo::System::new();
+                sys.refresh_processes(sysinfo::ProcessesToUpdate::All, false);
+                let redm_pids = find_redm_pids(&sys);
 
-                if !suspects.is_empty() {
-                    let mut st = handle.0.lock().unwrap();
-                    // Sticky: accumula ogni sospetto senza duplicare (per signature),
-                    // così la lista cresce man mano che più processi vengono rilevati.
-                    for s in suspects {
-                        if !st.violations.iter().any(|v| v.signature == s.signature) {
-                            st.violations.push(Violation {
-                                reason: s.reason,
-                                signature: s.signature,
-                            });
+                if !redm_pids.is_empty() {
+                    let mut suspects = Vec::new();
+                    #[cfg(windows)]
+                    {
+                        suspects.extend(win::scan_external_handles(&sys, &redm_pids));
+                        suspects.extend(win::scan_window_classes(&sys));
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        suspects.extend(scan_external_handles(&sys, &redm_pids));
+                        suspects.extend(scan_window_classes(&sys));
+                    }
+
+                    if !suspects.is_empty() {
+                        let mut st = handle.0.lock().unwrap();
+                        // Sticky: accumula ogni sospetto senza duplicare (per signature),
+                        // così la lista cresce man mano che più processi vengono rilevati.
+                        for s in suspects {
+                            if !st.violations.iter().any(|v| v.signature == s.signature) {
+                                st.violations.push(Violation {
+                                    reason: s.reason,
+                                    signature: s.signature,
+                                });
+                            }
                         }
                     }
                 }
@@ -456,7 +479,7 @@ pub fn spawn(handle: AntiCheatHandle) {
                 st.steam_hex.is_some() && !st.nonce.is_empty()
             };
             std::thread::sleep(if established {
-                SCAN_INTERVAL
+                HEARTBEAT_INTERVAL
             } else {
                 Duration::from_secs(1)
             });
