@@ -1,5 +1,10 @@
+//! Liste BASE compilate nel binario: il "pavimento" sempre attivo, unito a
+//! runtime con la lista remota firmata (vedi `remote.rs`). NON aggiungere qui i
+//! nomi di tuning quotidiano: vanno in `anticheat/allowlist.json` e pubblicati
+//! sul CDN. Questa lista è il fallback offline e va tenuta conservativa.
+
 /// Nomi eseguibili (lowercase) i cui handle su redm.exe sono leciti.
-pub const OWNER_ALLOWLIST: &[&str] = &[
+pub const BASE_OWNER_ALLOWLIST: &[&str] = &[
     "explorer.exe",
     "steam.exe",
     "steamwebhelper.exe",
@@ -227,3 +232,8 @@ pub const OWNER_ALLOWLIST: &[&str] = &[
     "system",
     "registry",
 ];
+
+/// Classi finestra (substring, lowercase) associate a tool di dumping/injection.
+/// Lista iniziale, estendibile via CDN (`window_class_block` in allowlist.json).
+pub const BASE_WINDOW_CLASS_BLACKLIST: &[&str] =
+    &["scylla", "xenos", "extremeinjector", "cheatengine"];

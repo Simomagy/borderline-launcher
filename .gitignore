@@ -19,6 +19,9 @@ tauri.key
 tauri.key.pub
 release.ps1
 
+# Firma transitoria prodotta da publish-allowlist.ps1 (rigenerata ad ogni run)
+anticheat/allowlist.json.sig
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

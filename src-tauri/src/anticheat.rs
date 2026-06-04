@@ -20,9 +20,10 @@ use sha2::Sha256;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Owner-allowlist (lista separata, vedi `anticheat/allowlist.rs`).
+/// Liste BASE compilate (owner-allowlist + window-class-blacklist).
 mod allowlist;
-use allowlist::OWNER_ALLOWLIST;
+/// Allowlist remota firmata dal CDN, unita alla BASE a runtime.
+mod remote;
 
 /// Cadenza dell'heartbeat verso il bridge: tiene viva la presenza e il
 /// binding-kick. DEVE restare ben sotto `LauncherHeartbeatTimeout`/`PresenceTTL`
@@ -36,11 +37,6 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// heartbeat, quindi alzare questo intervallo aumenta solo la latenza di
 /// rilevazione (report-only), non la copertura.
 const SCAN_INTERVAL: Duration = Duration::from_secs(30);
-
-/// Classi finestra associate a tool di dumping/injection (substring, lowercase).
-/// Lista iniziale, estendibile: cattura "script-kiddie" che non rinominano la
-/// window class. Report-only.
-const WINDOW_CLASS_BLACKLIST: &[&str] = &["scylla", "xenos", "extremeinjector", "cheatengine"];
 
 /// Una rilevazione singola.
 #[derive(Clone)]
@@ -279,7 +275,7 @@ mod win {
                 //  - owner esplicitamente in allowlist.
                 if is_system_path(&path)
                     || path.is_empty()
-                    || OWNER_ALLOWLIST.contains(&name.as_str())
+                    || super::remote::is_owner_allowed(&name)
                     || reported.contains(&name)
                 {
                     continue;
@@ -306,7 +302,7 @@ mod win {
         let len = unsafe { GetClassNameW(hwnd, &mut buf) };
         if len > 0 {
             let class = String::from_utf16_lossy(&buf[..len as usize]).to_lowercase();
-            if WINDOW_CLASS_BLACKLIST.iter().any(|c| class.contains(c)) {
+            if super::remote::window_block_matches(&class) {
                 let mut pid = 0u32;
                 unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
                 hits.push((class, pid));
@@ -422,6 +418,19 @@ pub fn spawn(handle: AntiCheatHandle) {
             .build()
             .ok();
 
+        // Client SEPARATO che VALIDA i certificati per scaricare l'allowlist
+        // firmata dal CDN: la firma minisign garantisce già l'integrità, ma il
+        // TLS valido è difesa in profondità a costo nullo (a differenza
+        // dell'heartbeat sopra, qui non serve accettare certificati invalidi).
+        let allowlist_client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(8))
+            .user_agent(crate::USER_AGENT)
+            .build()
+            .ok();
+
+        // Last-known-good su disco prima della prima fetch di rete.
+        remote::load_cache();
+
         let mut last_scan: Option<std::time::Instant> = None;
 
         loop {
@@ -432,6 +441,12 @@ pub fn spawn(handle: AntiCheatHandle) {
             let scan_due = last_scan.map_or(true, |t| t.elapsed() >= SCAN_INTERVAL);
             if scan_due {
                 last_scan = Some(std::time::Instant::now());
+
+                // Aggiorna l'allowlist (GET condizionale, ~zero costo se invariata)
+                // PRIMA di scansionare, così lo scan usa i nomi più recenti.
+                if let Some(c) = &allowlist_client {
+                    remote::refresh(c);
+                }
 
                 let mut sys = sysinfo::System::new();
                 sys.refresh_processes(sysinfo::ProcessesToUpdate::All, false);
