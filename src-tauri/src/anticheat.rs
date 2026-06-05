@@ -448,6 +448,21 @@ pub fn spawn(handle: AntiCheatHandle) {
                     remote::refresh(c);
                 }
 
+                // Riconciliazione a caldo: le violazioni sono sticky, ma se un
+                // processo è stato AGGIUNTO all'allowlist (tuning via CDN) va
+                // tolto dalla lista senza richiedere un riavvio del launcher.
+                // Solo gli `ExternalHandle:<name>` ora in allowlist vengono
+                // rimossi: i dumper veri non sono in allowlist e restano sticky.
+                {
+                    let mut st = handle.0.lock().unwrap();
+                    st.violations.retain(|v| {
+                        match v.signature.strip_prefix("ExternalHandle:") {
+                            Some(name) => !remote::is_owner_allowed(name),
+                            None => true,
+                        }
+                    });
+                }
+
                 let mut sys = sysinfo::System::new();
                 sys.refresh_processes(sysinfo::ProcessesToUpdate::All, false);
                 let redm_pids = find_redm_pids(&sys);
