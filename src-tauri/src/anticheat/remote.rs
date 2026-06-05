@@ -45,7 +45,11 @@ struct AllowlistDoc {
 
 /// Liste effettive (BASE ∪ remota) condivise con lo scan.
 struct EffectiveLists {
+    /// Nomi esatti (match `==`).
     owner_allow: HashSet<String>,
+    /// Prefissi: una entry come `codesetup-*` allowlista ogni owner il cui nome
+    /// inizia con `codesetup-` (vedi [`split_allow`]).
+    owner_allow_prefix: Vec<String>,
     window_block: Vec<String>,
     /// Versione remota applicata (0 = solo BASE).
     version: u64,
@@ -53,11 +57,34 @@ struct EffectiveLists {
     etag: Option<String>,
 }
 
+/// Partiziona i nomi allowlist in (match esatti, prefissi). Una entry che
+/// termina con `*` diventa un prefisso (lo `*` viene tolto): così `codesetup-*`
+/// copre tutti gli updater di VS Code senza elencarne ogni hash. Le entry vuote
+/// e il singolo `*` (che allowlisterebbe tutto) vengono scartate per sicurezza.
+fn split_allow(names: impl Iterator<Item = String>) -> (HashSet<String>, Vec<String>) {
+    let mut exact = HashSet::new();
+    let mut prefix = Vec::new();
+    for n in names {
+        match n.strip_suffix('*') {
+            Some(p) if !p.is_empty() => prefix.push(p.to_string()),
+            Some(_) => {} // bare "*": ignorato (allowlisterebbe ogni processo)
+            None if !n.is_empty() => {
+                exact.insert(n);
+            }
+            None => {}
+        }
+    }
+    (exact, prefix)
+}
+
 impl EffectiveLists {
     /// Stato iniziale: solo la BASE compilata.
     fn base_only() -> Self {
+        let (owner_allow, owner_allow_prefix) =
+            split_allow(BASE_OWNER_ALLOWLIST.iter().map(|s| s.to_string()));
         EffectiveLists {
-            owner_allow: BASE_OWNER_ALLOWLIST.iter().map(|s| s.to_string()).collect(),
+            owner_allow,
+            owner_allow_prefix,
             window_block: BASE_WINDOW_CLASS_BLACKLIST
                 .iter()
                 .map(|s| s.to_string())
@@ -73,12 +100,18 @@ static LISTS: LazyLock<RwLock<EffectiveLists>> =
 
 // ── Accessori usati dallo scan ───────────────────────────────────────────────
 
-/// Owner (nome eseguibile lowercase) è in allowlist?
+/// Owner (nome eseguibile lowercase) è in allowlist? Match esatto oppure per
+/// prefisso (entry `name*` nella lista → `name.starts_with`).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn is_owner_allowed(name: &str) -> bool {
     LISTS
         .read()
-        .map(|l| l.owner_allow.contains(name))
+        .map(|l| {
+            l.owner_allow.contains(name)
+                || l.owner_allow_prefix
+                    .iter()
+                    .any(|p| name.starts_with(p.as_str()))
+        })
         .unwrap_or(false)
 }
 
@@ -142,9 +175,13 @@ fn apply_verified(body: &[u8], sig_text: &str, etag: Option<String>, write_cache
         return false;
     }
 
-    // Merge: la BASE è sempre inclusa; la remota può solo aggiungere.
-    let mut owner: HashSet<String> = BASE_OWNER_ALLOWLIST.iter().map(|s| s.to_string()).collect();
-    owner.extend(doc.owner_allow.iter().map(|s| s.to_lowercase()));
+    // Merge: la BASE è sempre inclusa; la remota può solo aggiungere. Le entry
+    // con suffisso `*` (BASE o remote) diventano prefissi.
+    let names = BASE_OWNER_ALLOWLIST
+        .iter()
+        .map(|s| s.to_string())
+        .chain(doc.owner_allow.iter().map(|s| s.to_lowercase()));
+    let (owner, owner_prefix) = split_allow(names);
     let mut window: Vec<String> = BASE_WINDOW_CLASS_BLACKLIST
         .iter()
         .map(|s| s.to_string())
@@ -158,6 +195,7 @@ fn apply_verified(body: &[u8], sig_text: &str, etag: Option<String>, write_cache
 
     if let Ok(mut w) = LISTS.write() {
         w.owner_allow = owner;
+        w.owner_allow_prefix = owner_prefix;
         w.window_block = window;
         w.version = doc.version;
         w.etag = etag.clone();
