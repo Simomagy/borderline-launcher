@@ -135,6 +135,11 @@ fn launch_game() -> Result<(), String> {
     spawn_detached("redm://connect/rmabxvx")
 }
 
+/// Host del server vocale TeamSpeak di Borderline (porta default 9987, canale
+/// "Lobby" come primo canale senza password). Single source of truth, come gli
+/// altri target di connessione (redm/discord/steam).
+const TEAMSPEAK_HOST: &str = "ts3dev.borderlinerp.com";
+
 /// Cerca l'eseguibile di TeamSpeak nel registro (uninstall entries con
 /// DisplayName "TeamSpeak*"). È la fonte autorevole: copre installazioni
 /// per-utente (%LOCALAPPDATA%\Programs) e cartelle non standard, che i path
@@ -181,46 +186,66 @@ fn teamspeak_from_registry() -> Option<std::path::PathBuf> {
     None
 }
 
-/// Avvia TeamSpeak. TeamSpeak non espone uno URI scheme stabile per "apri
-/// l'app", quindi risolviamo l'eseguibile: prima dal registro (qualsiasi
-/// cartella d'installazione), poi dai path fissi noti come fallback. Lancia il
-/// primo che esiste; errore se nessuno.
+/// Risolve l'eseguibile di TeamSpeak: prima dal registro (qualsiasi cartella
+/// d'installazione), poi dai path fissi noti (TS5 + TS3 64/32-bit), sia
+/// per-utente (%LOCALAPPDATA%\Programs) sia per-macchina (%ProgramFiles%).
+#[cfg(target_os = "windows")]
+fn teamspeak_exe() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+
+    if let Some(path) = teamspeak_from_registry() {
+        return Some(path);
+    }
+
+    [
+        std::env::var_os("LOCALAPPDATA")
+            .map(|p| PathBuf::from(p).join(r"Programs\TeamSpeak 5\TeamSpeak.exe")),
+        std::env::var_os("LOCALAPPDATA")
+            .map(|p| PathBuf::from(p).join(r"Programs\TeamSpeak 3 Client\ts3client_win64.exe")),
+        std::env::var_os("LOCALAPPDATA")
+            .map(|p| PathBuf::from(p).join(r"Programs\TeamSpeak 3 Client\ts3client_win32.exe")),
+        std::env::var_os("ProgramFiles")
+            .map(|p| PathBuf::from(p).join(r"TeamSpeak 3 Client\ts3client_win64.exe")),
+        std::env::var_os("ProgramFiles(x86)")
+            .map(|p| PathBuf::from(p).join(r"TeamSpeak 3 Client\ts3client_win32.exe")),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|p| p.exists())
+}
+
+/// Avvia TeamSpeak e si connette direttamente al server vocale di Borderline.
+///
+/// Usa lo schema URL `ts3server://`, registrato dall'installer di TeamSpeak
+/// (handler: `ts3client "%1"`): è lo schema *stabile* per connettersi a un
+/// server — l'equivalente di `redm://connect/...`. Viene delegato a explorer.exe
+/// come gli altri launcher, e questo è essenziale: in release il launcher gira
+/// elevato (requireAdministrator) e explorer fa partire TeamSpeak DE-elevato,
+/// alla stessa integrity di RedM — condizione necessaria perché il plugin
+/// vocale (YACA) possa comunicare fra i due processi.
+///
+/// IMPORTANTE: niente query string. `explorer.exe` non sa fare il dispatch di un
+/// URL con `?...` e ripiegherebbe aprendo la cartella Documenti (bug osservato
+/// con `?nickname=`). Porta (9987) e canale ("Lobby") sono già i default del
+/// server; il nickname lo imposta YACA in-game, quindi non va precompilato qui.
 #[tauri::command]
 fn launch_teamspeak() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        use std::path::PathBuf;
+        let url = format!("ts3server://{TEAMSPEAK_HOST}");
 
-        if let Some(path) = teamspeak_from_registry() {
+        // Percorso primario: handler di protocollo via explorer (de-elevato),
+        // coerente con redm/discord/steam. Connette al server in un colpo solo.
+        if spawn_detached(&url).is_ok() {
+            return Ok(());
+        }
+
+        // Fallback estremo: se non si è riusciti nemmeno a spawnare il processo
+        // delegato, apri l'eseguibile risolto (senza connessione automatica).
+        if let Some(path) = teamspeak_exe() {
             return spawn_detached(&path.to_string_lossy());
         }
-
-        // Fallback su path fissi (TS5 + TS3 64/32-bit), sia per-utente
-        // (%LOCALAPPDATA%\Programs) sia per-macchina (%ProgramFiles%).
-        let candidates: Vec<PathBuf> = [
-            std::env::var_os("LOCALAPPDATA")
-                .map(|p| PathBuf::from(p).join(r"Programs\TeamSpeak 5\TeamSpeak.exe")),
-            std::env::var_os("LOCALAPPDATA")
-                .map(|p| PathBuf::from(p).join(r"Programs\TeamSpeak 3 Client\ts3client_win64.exe")),
-            std::env::var_os("LOCALAPPDATA")
-                .map(|p| PathBuf::from(p).join(r"Programs\TeamSpeak 3 Client\ts3client_win32.exe")),
-            std::env::var_os("ProgramFiles")
-                .map(|p| PathBuf::from(p).join(r"TeamSpeak 3 Client\ts3client_win64.exe")),
-            std::env::var_os("ProgramFiles(x86)")
-                .map(|p| PathBuf::from(p).join(r"TeamSpeak 3 Client\ts3client_win32.exe")),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-
-        for path in &candidates {
-            if path.exists() {
-                // spawn_detached delega a explorer.exe -> avvio nel contesto
-                // utente normale (non eredita l'elevazione del launcher).
-                return spawn_detached(&path.to_string_lossy());
-            }
-        }
-        Err("TeamSpeak non trovato nei percorsi standard".to_string())
+        Err("TeamSpeak non trovato".to_string())
     }
 
     #[cfg(not(target_os = "windows"))]
