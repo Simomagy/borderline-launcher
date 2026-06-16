@@ -20,7 +20,9 @@ pub const BASE_OWNER_ALLOWLIST: &[&str] = &[
     // ── Ecosistema launcher/gioco ────────────────────────────────────────────
     // Path leggibile fuori da System32 → NON coperti dai filtri su path. Sono i
     // lettori legittimi più comuni (overlay) e devono restare leciti offline.
-    "borderline-launcher.exe",
+    "borderline-launcher.exe",   // nome del binario Cargo (build di dev)
+    "borderlinelauncher.exe",    // productName storico (installati ≤ 1.2.x)
+    "borderline rp launcher.exe", // productName attuale (vedi tauri.conf.json)
     "launcher.exe",
     "steam.exe",
     "steamwebhelper.exe",
