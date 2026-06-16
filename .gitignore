@@ -22,6 +22,9 @@ release.ps1
 # Firma transitoria prodotta da publish-allowlist.ps1 (rigenerata ad ogni run)
 anticheat/allowlist.json.sig
 
+# Chiave privata di code-signing Authenticode — MAI nel repo (vedi CODE-SIGNING.md)
+*.pfx
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
