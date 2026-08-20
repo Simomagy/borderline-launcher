@@ -165,6 +165,8 @@ export default function App() {
   const [acStatus, setAcStatus] = useState<{ authenticated: boolean; violation: boolean; reason?: string; violations: AcViolation[] }>({ authenticated: false, violation: false, violations: [] });
   const [playError, setPlayError] = useState<string | null>(null);
   const [showAcModal, setShowAcModal] = useState(false);
+  // Avviso sull'istanza separata, mostrato prima dell'avvio a chi ha un ban temporaneo.
+  const [showExileModal, setShowExileModal] = useState(false);
   const acPrevCountRef = useRef(0);
 
   const [showSplash, setShowSplash] = useState(true);
@@ -402,6 +404,26 @@ export default function App() {
     return "Gioca";
   };
 
+  // Sequenza d'avvio: verifica di sicurezza — autorizzazione — lancio di RedM.
+  const startGame = useCallback(async () => {
+    if (!steamHex) return;
+    setPlayError(null);
+    // 1) Ricontrolla integrità/programmi non consentiti appena prima dell'avvio.
+    try {
+      const ac = await invoke<{ authenticated: boolean; violation: boolean }>("get_anticheat_status");
+      if (ac.violation)        { checkAnticheat(); setShowAcModal(true); return; }
+      if (!ac.authenticated)   { setPlayError("Autenticazione in corso, riprova tra un istante."); checkAnticheat(); return; }
+    } catch { setPlayError("Verifica di sicurezza non riuscita."); return; }
+    // 2) Autorizza l'ingresso e verifica l'esito: NIENTE avvio se fallisce.
+    try {
+      const raw = await invoke<string>("authorize_entry", { steamHex });
+      const r = JSON.parse(raw);
+      if (!r.success) { setPlayError(r.message || "Autorizzazione negata dal server."); return; }
+    } catch { setPlayError("Impossibile contattare il server. Riprova."); return; }
+    // 3) Tutto verificato → avvia RedM.
+    invoke("launch_game");
+  }, [steamHex, checkAnticheat]);
+
   // ── render ──────────────────────────────────────────────────────────────────
   return (
     <div
@@ -578,23 +600,11 @@ export default function App() {
                 <PlayButton
                   canPlay={canPlay}
                   label={playLabel()}
-                  onClick={async () => {
+                  onClick={() => {
                     if (!canPlay || !steamHex) return;
-                    setPlayError(null);
-                    // 1) Ricontrolla integrità/programmi non consentiti appena prima dell'avvio.
-                    try {
-                      const ac = await invoke<{ authenticated: boolean; violation: boolean }>("get_anticheat_status");
-                      if (ac.violation)        { checkAnticheat(); setShowAcModal(true); return; }
-                      if (!ac.authenticated)   { setPlayError("Autenticazione in corso, riprova tra un istante."); checkAnticheat(); return; }
-                    } catch { setPlayError("Verifica di sicurezza non riuscita."); return; }
-                    // 2) Autorizza l'ingresso e verifica l'esito: NIENTE avvio se fallisce.
-                    try {
-                      const raw = await invoke<string>("authorize_entry", { steamHex });
-                      const r = JSON.parse(raw);
-                      if (!r.success) { setPlayError(r.message || "Autorizzazione negata dal server."); return; }
-                    } catch { setPlayError("Impossibile contattare il server. Riprova."); return; }
-                    // 3) Tutto verificato → avvia RedM.
-                    invoke("launch_game");
+                    // Ban temporaneo: prima spiega l'istanza separata, si avvia da lì.
+                    if (accessStatus === "banned" && banInfo?.ban_type === "temporary") { setShowExileModal(true); return; }
+                    startGame();
                   }}
                 />
 
@@ -646,6 +656,14 @@ export default function App() {
             progress={updateProgress}
             onUpdate={doUpdate}
             onDismiss={() => setShowUpdateModal(false)}
+          />
+        )}
+
+        {/* ══ ESILIO MODAL — istanza separata durante un ban temporaneo ══ */}
+        {showExileModal && (
+          <ExileModal
+            ban={banInfo}
+            onConfirm={() => { setShowExileModal(false); startGame(); }}
           />
         )}
 
@@ -897,6 +915,76 @@ function AntiDumpModal({
               Ho capito
             </button>
           </div>
+        </div>
+      </Poster>
+    </div>
+  );
+}
+
+// ── ExileModal — cosa comporta un ban temporaneo, prima dell'avvio ──────────
+
+function ExileModal({ ban, onConfirm }: { ban: BanInfo | null; onConfirm: () => void }) {
+  const expires = (() => {
+    if (!ban?.expires_at) return null;
+    const d = new Date(ban.expires_at);
+    return isNaN(d.getTime())
+      ? null
+      : d.toLocaleString("it-IT", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  })();
+
+  const points = [
+    "Puoi fare tutto quello che faresti normalmente: missioni, lavori, commercio, proprietà.",
+    "Vedi e interagisci soltanto con altri giocatori in esilio, fino allo scadere del ban.",
+    "Alla scadenza il server ti riporta da solo nell'istanza generale: nessun relog necessario.",
+    "Tutti i progressi ottenuti prima del ban restano tuoi — inventario, carri, denaro, animali — e tutto ciò che fai nell'istanza separata viene mantenuto quando l'esilio finisce.",
+  ];
+
+  return (
+    <div
+      className="absolute inset-0 z-50 flex items-center justify-center"
+      style={{ background: "rgba(4,3,2,.9)", backdropFilter: "blur(10px)" }}
+    >
+      <Poster width={520}>
+        <div className="flex flex-col gap-4">
+          <PaperHeader no="Ordinanza dello Sceriffo" title="Esilio Temporaneo" />
+          <h2 className="text-display text-[26px] leading-none text-center" style={{ color: INK.head }}>
+            Entrerai in un'istanza separata
+          </h2>
+
+          <PaperRule double />
+
+          <p className="text-serif-sc text-[12px] leading-relaxed text-center" style={{ color: INK.soft }}>
+            Borderline non ti chiude fuori dal territorio. Con un ban temporaneo continui a giocare
+            sul server, ma in un'<span style={{ color: INK.text }}>istanza separata</span> dagli altri
+            pionieri.
+          </p>
+
+          <div className="flex flex-col gap-1.5">
+            {points.map((t, i) => (
+              <div
+                key={i}
+                className="flex items-start gap-2 px-3 py-2"
+                style={{ background: "rgba(60,38,14,.12)", boxShadow: "inset 0 0 0 1px rgba(230,164,92,.18)" }}
+              >
+                <Star size={11} style={{ color: INK.red }} className="flex-shrink-0 mt-0.5" />
+                <span className="text-serif-sc text-[12px] leading-snug" style={{ color: INK.text }}>{t}</span>
+              </div>
+            ))}
+          </div>
+
+          {expires && (
+            <p className="text-mono text-[8px] uppercase tracking-[.18em] text-center" style={{ color: INK.red }}>
+              L'esilio termina il {expires}
+            </p>
+          )}
+
+          <button
+            onClick={onConfirm}
+            className="py-3 text-display text-[18px] tracking-[.18em] uppercase cursor-pointer transition-colors w-full"
+            style={{ color: "#f3e2bd", background: INK.red, boxShadow: "0 3px 0 rgba(60,18,8,.5)" }}
+          >
+            Ho capito
+          </button>
         </div>
       </Poster>
     </div>
