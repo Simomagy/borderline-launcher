@@ -29,6 +29,8 @@ const win = () => getCurrentWindow();
 
 // Addon vocale YACA (backend TeamSpeak) per Borderline
 const YACA_ADDON_URL = "https://yaca.systems/download/boderlinedev";
+// Server TeamSpeak del territorio — mostrato sotto la checklist, copiabile.
+const TS3_ADDRESS = "ts3dev.borderlinerp.com";
 
 const WESTERN_MESSAGES = [
   "Contando i fagioli", "Oliando i revolver", "Sellando il cavallo",
@@ -502,6 +504,7 @@ export default function App() {
                   }
                 </div>
               ))}
+              <Ts3Copy />
             </div>
 
             {/* pulsante addon vocale — sempre raggiungibile */}
@@ -1010,6 +1013,47 @@ function HexCopy({ hex }: { hex: string }) {
     >
       <span className="text-mono text-[8px] tracking-wide" style={{ color: copied ? INK.green : INK.soft }}>
         {copied ? "copiato!" : `HEX ${hex.slice(0, 6)}…${hex.slice(-4)}`}
+      </span>
+      {copied
+        ? <Check size={9} style={{ color: INK.green }} />
+        : <Copy size={9} style={{ color: INK.faint }} className="group-hover:opacity-100 opacity-60 transition-opacity" />
+      }
+    </button>
+  );
+}
+
+// ── Ts3Copy — indirizzo del server vocale, un tocco per copiarlo ────────────
+
+function Ts3Copy() {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(TS3_ADDRESS);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    } catch { /* clipboard non disponibile */ }
+  };
+  return (
+    <button
+      onClick={copy}
+      title="Copia l'indirizzo del server TeamSpeak"
+      className="group flex items-center justify-center gap-1 mt-1 w-full py-1 cursor-pointer transition-all hover:brightness-[.97]"
+      style={{
+        // velatura d'inchiostro che sfuma ai bordi, come le regole di pagina
+        background: copied
+          ? "linear-gradient(90deg, transparent, rgba(74,90,20,.20) 18%, rgba(74,90,20,.20) 82%, transparent)"
+          : "linear-gradient(90deg, transparent, rgba(90,58,20,.16) 18%, rgba(90,58,20,.16) 82%, transparent)",
+      }}
+    >
+      <span className="text-mono text-[7px] uppercase tracking-[.2em]" style={{ color: INK.faint }}>TS3</span>
+      <span
+        className="text-serif-sc text-[11px] tracking-wide"
+        style={{
+          color: copied ? INK.green : INK.head,
+          textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3,
+        }}
+      >
+        {copied ? "indirizzo copiato!" : TS3_ADDRESS}
       </span>
       {copied
         ? <Check size={9} style={{ color: INK.green }} />
