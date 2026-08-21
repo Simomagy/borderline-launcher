@@ -75,6 +75,18 @@ fn check_processes() -> serde_json::Value {
 fn spawn_detached(uri: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
+        // Se l'URI ha uno schema e questo NON e' registrato (o punta a un exe
+        // inesistente), fermati subito con un errore utile invece di delegare a
+        // una shell che fallira' in silenzio davanti al giocatore. Vale per
+        // redm://, discord://, steam:// e ts3server:// allo stesso modo.
+        if let Some(scheme) = uri_scheme(uri) {
+            if !protocol_handler_ok(scheme) {
+                return Err(format!(
+                    "Nessuna applicazione registrata per {scheme}:// — installazione mancante o danneggiata"
+                ));
+            }
+        }
+
         // Metodo 1: explorer.exe delega all'istanza shell già in esecuzione (fuori dal job object).
         // Discord/Steam/RedM diventano figli di explorer, non del launcher → non vengono killati.
         if std::process::Command::new("explorer")
@@ -118,6 +130,28 @@ fn spawn_detached(uri: &str) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+/// Avvia un eseguibile con un argomento, staccato dal job object del launcher.
+/// Serve quando NON si può passare dalla shell: `explorer.exe` accetta un solo
+/// item e non inoltra argomenti, quindi per passare un URL a un exe specifico
+/// bisogna spawnarlo direttamente.
+#[cfg(target_os = "windows")]
+fn spawn_detached_exe(exe: &std::path::Path, arg: &str) -> Result<(), String> {
+    let launch = |flags: u32| {
+        std::process::Command::new(exe)
+            .arg(arg)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(flags)
+            .spawn()
+    };
+    // Con breakaway dal job object; se il job non lo consente, riprova senza.
+    if launch(BREAKAWAY_FLAGS | NO_WINDOW).is_ok() {
+        return Ok(());
+    }
+    launch(NO_WINDOW).map(|_| ()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -186,6 +220,106 @@ fn teamspeak_from_registry() -> Option<std::path::PathBuf> {
     None
 }
 
+/// Schema di un URI (`redm://connect/...` -> `redm`), se ne ha uno.
+#[cfg(target_os = "windows")]
+fn uri_scheme(uri: &str) -> Option<&str> {
+    let (scheme, _) = uri.split_once("://")?;
+    let ok = !scheme.is_empty()
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    ok.then_some(scheme)
+}
+
+/// Path dell'eseguibile in una riga di comando di un handler. Gestisce sia
+/// `"C:\...\app.exe" "%1"` sia `C:\...\app.exe %1`, e i path con spazi non
+/// quotati (taglia sull'ultima estensione `.exe`).
+#[cfg(target_os = "windows")]
+fn command_exe(cmd: &str) -> Option<String> {
+    let cmd = cmd.trim();
+    if let Some(rest) = cmd.strip_prefix('"') {
+        return rest.split('"').next().map(str::to_string).filter(|s| !s.is_empty());
+    }
+    if let Some(i) = cmd.to_lowercase().rfind(".exe") {
+        return Some(cmd[..i + 4].to_string());
+    }
+    cmd.split_whitespace().next().map(str::to_string).filter(|s| !s.is_empty())
+}
+
+/// Espande i `%VAR%` (i comandi degli handler sono spesso REG_EXPAND_SZ, es.
+/// `%ProgramFiles%\App\app.exe`). Le variabili non risolte restano invariate.
+#[cfg(target_os = "windows")]
+fn expand_env(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('%') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        let Some(j) = after.find('%') else {
+            out.push('%');
+            rest = after;
+            break;
+        };
+        let name = &after[..j];
+        match std::env::var(name) {
+            Ok(v) => out.push_str(&v),
+            Err(_) => {
+                out.push('%');
+                out.push_str(name);
+                out.push('%');
+            }
+        }
+        rest = &after[j + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Lo schema URL ha un handler registrato **e** utilizzabile?
+///
+/// Serve a sapere PRIMA se delegare l'URI alla shell ha senso: `explorer.exe`
+/// fa il dispatch in modo asincrono e il suo `spawn()` riesce comunque, quindi
+/// un handler assente o che punta a un exe cancellato non si manifesta come
+/// errore per noi - solo come il box "explorer.exe - Applicazione non trovata"
+/// in faccia al giocatore (bug osservato con `ts3server://` non registrato).
+///
+/// Fail-safe: in caso di dubbio (comando non interpretabile, eseguibile senza
+/// directory risolto via PATH, handler di app pacchettizzata) ritorna `true`,
+/// cosi' non si blocca mai un avvio che funzionerebbe. Ritorna `false` solo nei
+/// due casi netti: chiave assente, o comando che punta a un file inesistente.
+#[cfg(target_os = "windows")]
+fn protocol_handler_ok(scheme: &str) -> bool {
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    let tail = format!(r"{scheme}\shell\open\command");
+    let roots = [
+        (HKEY_CURRENT_USER, format!(r"Software\Classes\{tail}")),
+        (HKEY_CLASSES_ROOT, tail),
+    ];
+
+    for (root, key) in roots {
+        let Ok(k) = RegKey::predef(root).open_subkey(&key) else { continue };
+        // App pacchettizzate: l'esecuzione passa da DelegateExecute e il comando
+        // puo' essere uno stub -> non giudicabile, consideralo buono.
+        if k.get_value::<String, _>("DelegateExecute").is_ok() {
+            return true;
+        }
+        let Ok(cmd) = k.get_value::<String, _>("") else { continue };
+        let Some(exe) = command_exe(&cmd) else { return true };
+        let exe = expand_env(&exe);
+        let p = std::path::Path::new(&exe);
+        if p.is_file() {
+            return true;
+        }
+        // Nome nudo (es. `rundll32.exe`): risolto via PATH, non verificabile.
+        if p.parent().is_none_or(|d| d.as_os_str().is_empty()) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Risolve l'eseguibile di TeamSpeak: prima dal registro (qualsiasi cartella
 /// d'installazione), poi dai path fissi noti (TS5 + TS3 64/32-bit), sia
 /// per-utente (%LOCALAPPDATA%\Programs) sia per-macchina (%ProgramFiles%).
@@ -219,10 +353,10 @@ fn teamspeak_exe() -> Option<std::path::PathBuf> {
 /// Usa lo schema URL `ts3server://`, registrato dall'installer di TeamSpeak
 /// (handler: `ts3client "%1"`): è lo schema *stabile* per connettersi a un
 /// server — l'equivalente di `redm://connect/...`. Viene delegato a explorer.exe
-/// come gli altri launcher, e questo è essenziale: in release il launcher gira
-/// elevato (requireAdministrator) e explorer fa partire TeamSpeak DE-elevato,
-/// alla stessa integrity di RedM — condizione necessaria perché il plugin
-/// vocale (YACA) possa comunicare fra i due processi.
+/// come gli altri launcher, così TeamSpeak resta figlio della shell e non del
+/// launcher (niente kill a catena alla chiusura). Dalla 1.3.5 il launcher gira
+/// `asInvoker`, quindi anche il fallback diretto qui sotto avvia TeamSpeak alla
+/// stessa integrity di RedM, come richiede il plugin vocale (YACA).
 ///
 /// IMPORTANTE: niente query string. `explorer.exe` non sa fare il dispatch di un
 /// URL con `?...` e ripiegherebbe aprendo la cartella Documenti (bug osservato
@@ -234,18 +368,21 @@ fn launch_teamspeak() -> Result<(), String> {
     {
         let url = format!("ts3server://{TEAMSPEAK_HOST}");
 
-        // Percorso primario: handler di protocollo via explorer (de-elevato),
-        // coerente con redm/discord/steam. Connette al server in un colpo solo.
+        // Percorso primario: handler di protocollo via shell, coerente con
+        // redm/discord/steam. Connette al server in un colpo solo. Se lo schema
+        // non e' registrato `spawn_detached` ritorna Err (non delega alla shell),
+        // quindi al fallback qui sotto si arriva davvero.
         if spawn_detached(&url).is_ok() {
             return Ok(());
         }
 
-        // Fallback estremo: se non si è riusciti nemmeno a spawnare il processo
-        // delegato, apri l'eseguibile risolto (senza connessione automatica).
+        // Fallback: avvia l'eseguibile risolto passando l'URL come argomento.
+        // È esattamente ciò che farebbe l'handler (`ts3client "%1"`), quindi la
+        // connessione automatica al server funziona lo stesso.
         if let Some(path) = teamspeak_exe() {
-            return spawn_detached(&path.to_string_lossy());
+            return spawn_detached_exe(&path, &url);
         }
-        Err("TeamSpeak non trovato".to_string())
+        Err("TeamSpeak non trovato: installalo o aprilo a mano".to_string())
     }
 
     #[cfg(not(target_os = "windows"))]

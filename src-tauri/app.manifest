@@ -1,4 +1,13 @@
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!-- asInvoker: nessuna elevazione, nessun prompt UAC. Il launcher chiedeva
+       requireAdministrator solo perche' la scansione anti-dump doveva leggere i
+       path dei processi elevati; rimossa quella (1.3.4), il privilegio non serve
+       piu' a nulla. Senza elevazione i processi che il launcher avvia (RedM,
+       TeamSpeak) girano alla stessa integrity dell'utente, come richiede il
+       plugin vocale YACA.
+       ATTENZIONE: SOLO ASCII in questo file. Accenti/UTF-8 nei commenti vengono
+       ricodificati in ANSI dal resource compiler -> byte UTF-8 non validi nel
+       manifest embedded -> SxS "Invalid Xml syntax" / os error 14001 all'avvio. -->
   <dependency>
     <dependentAssembly>
       <assemblyIdentity
@@ -14,7 +23,7 @@
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
     <security>
       <requestedPrivileges>
-        <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
       </requestedPrivileges>
     </security>
   </trustInfo>

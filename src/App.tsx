@@ -388,6 +388,14 @@ export default function App() {
     return "Gioca";
   };
 
+  // Un avvio fallito (schema URL non registrato, app disinstallata) deve dirlo:
+  // altrimenti il giocatore preme e non succede nulla. `spawn_detached` lato Rust
+  // ritorna un messaggio già leggibile, lo mostriamo nella riga di hint.
+  const launch = useCallback((cmd: string) => {
+    setPlayError(null);
+    invoke(cmd).catch(e => setPlayError(String(e)));
+  }, []);
+
   // Sequenza d'avvio: verifica di sicurezza — autorizzazione — lancio di RedM.
   const startGame = useCallback(async () => {
     if (!steamHex) return;
@@ -404,7 +412,7 @@ export default function App() {
       if (!r.success) { setPlayError(r.message || "Autorizzazione negata dal server."); return; }
     } catch { setPlayError("Impossibile contattare il server. Riprova."); return; }
     // 3) Tutto verificato → avvia RedM.
-    invoke("launch_game");
+    invoke("launch_game").catch(e => setPlayError(String(e)));
   }, [steamHex, checkAnticheat]);
 
   // ── render ──────────────────────────────────────────────────────────────────
@@ -497,9 +505,9 @@ export default function App() {
             {/* applicazioni — checklist d'inchiostro */}
             <div className="flex flex-col gap-1.5">
               {[
-                { label: "Discord",   running: discordRunning,   action: () => invoke("launch_discord"), missing: "✗ non avviato" },
-                { label: "Steam",     running: steamRunning,     action: () => invoke("launch_steam"),   missing: "✗ non avviato" },
-                { label: "TeamSpeak", running: teamspeakRunning, action: () => invoke("launch_teamspeak").catch(() => {}), missing: "✗ non avviato" },
+                { label: "Discord",   running: discordRunning,   action: () => launch("launch_discord"),   missing: "✗ non avviato" },
+                { label: "Steam",     running: steamRunning,     action: () => launch("launch_steam"),     missing: "✗ non avviato" },
+                { label: "TeamSpeak", running: teamspeakRunning, action: () => launch("launch_teamspeak"), missing: "✗ non avviato" },
               ].map(app => (
                 <div key={app.label} className="flex items-center justify-between">
                   <span className="text-serif-sc text-[12px] tracking-wide" style={{ color: INK.text }}>{app.label}</span>

@@ -15,21 +15,13 @@ fn main() {
     // Ri-esegui build.rs se .env o i manifest cambiano
     println!("cargo:rerun-if-changed=.env");
     println!("cargo:rerun-if-changed=app.manifest");
-    println!("cargo:rerun-if-changed=app-dev.manifest");
 
-    // Manifest Windows condizionale al profilo:
-    //  - release → requireAdministrator (AC vede i path dei processi elevati;
-    //    l'utente finale vedrà il prompt UAC ad ogni avvio del launcher).
-    //  - debug   → asInvoker (così `tauri dev` parte da una shell normale senza
-    //    UAC; in dev l'AC non vede i path dei processi elevati — accettabile).
-    let is_release = std::env::var("PROFILE").as_deref() == Ok("release");
-    let manifest = if is_release {
-        include_str!("app.manifest")
-    } else {
-        include_str!("app-dev.manifest")
-    };
+    // Manifest Windows unico (asInvoker) per dev e release: dalla rimozione
+    // della scansione anti-dump (1.3.4) il launcher non ha più alcun motivo di
+    // girare elevato, quindi niente prompt UAC ad ogni avvio e niente
+    // disallineamento di integrity con i processi che avvia.
     let attrs = tauri_build::Attributes::new().windows_attributes(
-        tauri_build::WindowsAttributes::new().app_manifest(manifest),
+        tauri_build::WindowsAttributes::new().app_manifest(include_str!("app.manifest")),
     );
     tauri_build::try_build(attrs).expect("failed to run tauri-build");
 }
