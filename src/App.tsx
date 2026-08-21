@@ -23,7 +23,6 @@ interface BanInfo {
 }
 type ServerStatus  = "loading" | "online" | "offline";
 type AccessStatus  = "loading" | "allowed" | "not_allowlisted" | "banned" | "error" | "unknown";
-interface AcViolation { reason: string; signature: string; }
 
 const win = () => getCurrentWindow();
 
@@ -160,14 +159,11 @@ export default function App() {
   const [steamProfile, setSteamProfile] = useState<SteamProfile | null>(null);
   const [accessStatus, setAccessStatus] = useState<AccessStatus>("loading");
   const [banInfo, setBanInfo]           = useState<BanInfo | null>(null);
-  // Stato anti-cheat: authenticated = challenge verificato dal server (client integro);
-  // violations = processi che leggono la memoria di RedM (report-only in taratura).
-  const [acStatus, setAcStatus] = useState<{ authenticated: boolean; violation: boolean; reason?: string; violations: AcViolation[] }>({ authenticated: false, violation: false, violations: [] });
+  // authenticated = challenge del server verificato (client integro e presente).
+  const [acStatus, setAcStatus] = useState<{ authenticated: boolean }>({ authenticated: false });
   const [playError, setPlayError] = useState<string | null>(null);
-  const [showAcModal, setShowAcModal] = useState(false);
   // Avviso sull'istanza separata, mostrato prima dell'avvio a chi ha un ban temporaneo.
   const [showExileModal, setShowExileModal] = useState(false);
-  const acPrevCountRef = useRef(0);
 
   const [showSplash, setShowSplash] = useState(true);
   const [splashExiting, setSplashExiting] = useState(false);
@@ -234,19 +230,10 @@ export default function App() {
   // Polling stato anti-cheat (autenticazione challenge + rilevazione dumper).
   const checkAnticheat = useCallback(async () => {
     try {
-      const r = await invoke<{ authenticated: boolean; violation: boolean; reason?: string; violations?: AcViolation[] }>("get_anticheat_status");
-      setAcStatus({ authenticated: !!r.authenticated, violation: !!r.violation, reason: r.reason, violations: r.violations ?? [] });
+      const r = await invoke<{ authenticated: boolean }>("get_anticheat_status");
+      setAcStatus({ authenticated: !!r.authenticated });
     } catch { /* mantieni stato corrente */ }
   }, []);
-
-  // Apri il popup immediatamente appena viene rilevato un nuovo processo sospetto
-  // (alla prima rilevazione e ogni volta che la lista cresce). La scansione gira
-  // anche prima di premere GIOCA, quindi se RedM è già aperto compare subito.
-  useEffect(() => {
-    const n = acStatus.violations.length;
-    if (n > acPrevCountRef.current) setShowAcModal(true);
-    acPrevCountRef.current = n;
-  }, [acStatus.violations.length]);
 
   const checkForUpdates = useCallback(async () => {
     try {
@@ -381,13 +368,11 @@ export default function App() {
     return () => { clearInterval(h); clearInterval(p); clearInterval(a); clearInterval(d); clearInterval(c); clearInterval(u); unlisten?.(); };
   }, [initializing, fetchHealth, checkProcesses, recheckAccess, steamHex, checkForUpdates, updatePresence, checkAnticheat]);
 
-  // GIOCA è bloccato se un programma non consentito sta leggendo la memoria del
-  // gioco: il player deve chiuderlo e riavviare prima di poter entrare.
   const canPlay =
     !redmRunning &&
     serverStatus === "online" && steamRunning && teamspeakRunning && discordRunning &&
     (accessStatus === "allowed" || (accessStatus === "banned" && banInfo?.ban_type === "temporary")) &&
-    acStatus.authenticated && !acStatus.violation;
+    acStatus.authenticated;
 
   const playLabel = () => {
     if (redmRunning)                 return "In gioco";
@@ -399,7 +384,6 @@ export default function App() {
     if (accessStatus === "not_allowlisted") return "Accesso Negato";
     if (accessStatus === "banned" && banInfo?.ban_type === "permanent") return "Bannato";
     if (accessStatus === "loading")  return "Verifica…";
-    if (acStatus.violation)          return "Bloccato";
     if (!acStatus.authenticated)     return "Autenticazione…";
     return "Gioca";
   };
@@ -408,11 +392,10 @@ export default function App() {
   const startGame = useCallback(async () => {
     if (!steamHex) return;
     setPlayError(null);
-    // 1) Ricontrolla integrità/programmi non consentiti appena prima dell'avvio.
+    // 1) Ricontrolla l'autenticazione del launcher appena prima dell'avvio.
     try {
-      const ac = await invoke<{ authenticated: boolean; violation: boolean }>("get_anticheat_status");
-      if (ac.violation)        { checkAnticheat(); setShowAcModal(true); return; }
-      if (!ac.authenticated)   { setPlayError("Autenticazione in corso, riprova tra un istante."); checkAnticheat(); return; }
+      const ac = await invoke<{ authenticated: boolean }>("get_anticheat_status");
+      if (!ac.authenticated) { setPlayError("Autenticazione in corso, riprova tra un istante."); checkAnticheat(); return; }
     } catch { setPlayError("Verifica di sicurezza non riuscita."); return; }
     // 2) Autorizza l'ingresso e verifica l'esito: NIENTE avvio se fallisce.
     try {
@@ -612,13 +595,6 @@ export default function App() {
                 <div className="h-4 flex items-center justify-center">
                   {playError ? (
                     <span className="text-mono text-[8px] text-blood-500/80 uppercase tracking-wider">{playError}</span>
-                  ) : acStatus.violation ? (
-                    <button
-                      onClick={() => setShowAcModal(true)}
-                      className="text-mono text-[8px] text-blood-500/80 hover:text-blood-400 uppercase tracking-wider cursor-pointer underline-offset-2 hover:underline transition-colors"
-                    >
-                      {acStatus.violations.length} {acStatus.violations.length === 1 ? "programma blocca" : "programmi bloccano"} l'accesso · dettagli
-                    </button>
                   ) : (
                     <>
                       {accessStatus === "banned" && banInfo?.ban_type === "temporary" && (
@@ -664,14 +640,6 @@ export default function App() {
           <ExileModal
             ban={banInfo}
             onConfirm={() => { setShowExileModal(false); startGame(); }}
-          />
-        )}
-
-        {/* ══ ANTI-DUMP MODAL ══ */}
-        {showAcModal && acStatus.violations.length > 0 && (
-          <AntiDumpModal
-            violations={acStatus.violations}
-            onDismiss={() => setShowAcModal(false)}
           />
         )}
 
@@ -816,105 +784,6 @@ function UpdateModal({
               </button>
             </div>
           )}
-        </div>
-      </Poster>
-    </div>
-  );
-}
-
-// ── AntiDumpModal ───────────────────────────────────────────────────────────────
-
-function AntiDumpModal({
-  violations,
-  onDismiss,
-}: {
-  violations: AcViolation[];
-  onDismiss: () => void;
-}) {
-  const [copied, setCopied] = useState(false);
-
-  // Estrae il nome del programma dalla signature interna senza esporre i
-  // dettagli di rilevazione: "<tipo>:<nome>" → "<nome>". Dedup per nome.
-  const programs = (() => {
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const v of violations) {
-      const idx = v.signature.indexOf(":");
-      const name = (idx >= 0 ? v.signature.slice(idx + 1) : v.signature).trim().toLowerCase();
-      if (!name || seen.has(name)) continue;
-      seen.add(name);
-      out.push(name);
-    }
-    return out;
-  })();
-
-  // Report da allegare a un ticket di assistenza, già nel formato pronto per
-  // l'allowlist (lo staff lo incolla direttamente; il player non deve capirlo).
-  const ticketReport = programs.map(p => `    "${p}",`).join("\n");
-
-  const copyReport = async () => {
-    if (programs.length === 0) return;
-    try {
-      await navigator.clipboard.writeText(ticketReport);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
-    } catch { /* clipboard non disponibile */ }
-  };
-
-  return (
-    <div
-      className="absolute inset-0 z-50 flex items-center justify-center"
-      style={{ background: "rgba(4,3,2,.9)", backdropFilter: "blur(10px)" }}
-    >
-      <Poster width={520}>
-        <div className="flex flex-col gap-4">
-          <PaperHeader no="Controllo di Sicurezza" title="Accesso Bloccato" />
-          <h2 className="text-display text-[26px] leading-none text-center" style={{ color: INK.head }}>
-            {programs.length} {programs.length === 1 ? "programma non consentito" : "programmi non consentiti"}
-          </h2>
-
-          <PaperRule double />
-
-          <p className="text-serif-sc text-[12px] leading-relaxed text-center" style={{ color: INK.soft }}>
-            I seguenti programmi non permettono l'accesso a Borderline. Chiudili e riavvia il gioco
-            per poter entrare. Se pensi si tratti di un errore, apri un ticket di assistenza e allega
-            l'elenco qui sotto con il pulsante <span style={{ color: INK.text }}>Copia</span>.
-          </p>
-
-          <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto pr-1">
-            {programs.map((p, i) => (
-              <div
-                key={p + i}
-                className="flex items-center gap-2 px-3 py-2"
-                style={{ background: "rgba(60,38,14,.12)", boxShadow: "inset 0 0 0 1px rgba(230,164,92,.18)" }}
-              >
-                <span className="text-[10px] flex-shrink-0" style={{ color: INK.red }}>●</span>
-                <span className="text-serif-sc text-[13px] leading-snug break-all" style={{ color: INK.text }}>{p}</span>
-              </div>
-            ))}
-          </div>
-
-          <div className="flex items-center gap-3 pt-1">
-            <button
-              onClick={copyReport}
-              disabled={programs.length === 0}
-              title="Copia l'elenco da allegare al ticket di assistenza"
-              className="group flex items-center justify-center gap-2 py-3 px-4 text-mono text-[10px] uppercase tracking-[.14em] cursor-pointer transition-colors flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
-              style={{ color: copied ? INK.green : INK.text, boxShadow: "inset 0 0 0 1px rgba(230,164,92,.4)" }}
-            >
-              {copied
-                ? <Check size={12} style={{ color: INK.green }} />
-                : <Copy size={12} className="opacity-70 group-hover:opacity-100 transition-opacity" />}
-              {copied ? "Copiato!" : "Copia per assistenza"}
-            </button>
-            <button
-              onClick={onDismiss}
-              className="py-3 text-display text-[18px] tracking-[.18em] uppercase cursor-pointer transition-colors w-full"
-              style={{ color: "#f3e2bd", background: INK.red, boxShadow: "0 3px 0 rgba(60,18,8,.5)" }}
-            >
-              Ho capito
-            </button>
-          </div>
         </div>
       </Poster>
     </div>

@@ -1,18 +1,23 @@
-//! Anti-Dump watchdog (Ring 3 / user-mode).
+//! Presenza del launcher e challenge d'integrità (Ring 3 / user-mode).
 //!
 //! Un thread di background (vedi [`spawn`]) manda un heartbeat al `pry-bridge`
-//! ogni ~5s e, più di rado (~30s), scansiona i processi terzi che leggono la
-//! memoria di `redm.exe` (dumper) o le finestre note di tool di dumping. Le
-//! rilevazioni vengono segnalate tramite l'heartbeat (header
-//! `status`/`reason`/`signature`).
+//! ogni [`HEARTBEAT_INTERVAL`]. L'heartbeat fa tre cose:
+//!   - tiene viva la **presenza**: se smette di arrivare, il bridge kicka il
+//!     giocatore rimasto in gioco senza launcher (fail-closed);
+//!   - risponde al **challenge HMAC rotante**, che lega la sessione a un binario
+//!     integro (un client rifatto non ottiene poi `authorize_entry`);
+//!   - riporta i conteggi aggregati (`players`/`launchers`) per la Rich Presence.
 //!
-//! Modalità **report-only**: il launcher non chiude il gioco; è il server a
-//! decidere (log, oppure kick se `Shared.AntiDumpEnforce`). L'heartbeat porta
-//! anche la risposta a un challenge HMAC rotante che lega la connessione a un
-//! binario integro.
-//!
-//! Tutta la scansione di basso livello è Windows-only; su altre piattaforme le
-//! funzioni di scan ritornano vuoto così il progetto compila ovunque.
+//! **Scansione anti-dump rimossa (1.3.4).** Il launcher non ispeziona più i
+//! processi di terze parti. Il segnale su cui si basava — un handle su
+//! `redm.exe` con `PROCESS_VM_READ` — è richiesto da overlay, driver di
+//! periferiche, antivirus, componenti della shell e bloatware OEM: l'allowlist
+//! era il complemento di un insieme illimitato (era arrivata a 407 nomi, v59)
+//! e ogni falso positivo bloccava GIOCA a un giocatore legittimo. In cambio non
+//! copriva i cheat reali di RedM, che girano dentro il processo del gioco (DLL
+//! iniettate, executor Lua) o fuori dalla portata dello user-mode (driver
+//! kernel, DMA). Il rilevamento vive lato server, dove i falsi positivi da
+//! software desktop non esistono per costruzione.
 
 use hmac::{Hmac, KeyInit, Mac};
 use reqwest::header::AUTHORIZATION;
@@ -20,45 +25,16 @@ use sha2::Sha256;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Liste BASE compilate (owner-allowlist + window-class-blacklist).
-mod allowlist;
-/// Allowlist remota firmata dal CDN, unita alla BASE a runtime.
-mod remote;
-
 /// Cadenza dell'heartbeat verso il bridge: tiene viva la presenza e il
 /// binding-kick. DEVE restare ben sotto `LauncherHeartbeatTimeout`/`PresenceTTL`
 /// lato bridge, altrimenti i giocatori in-game vengono espulsi.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Cadenza della scansione anti-dump (handle table globale + finestre).
-/// Disaccoppiata e più rada dell'heartbeat: lo scan globale è la parte
-/// "rumorosa" verso l'euristica degli antivirus e non serve ad ogni heartbeat.
-/// Le violazioni sono sticky: una volta trovate vengono riportate ad ogni
-/// heartbeat, quindi alzare questo intervallo aumenta solo la latenza di
-/// rilevazione (report-only), non la copertura.
-const SCAN_INTERVAL: Duration = Duration::from_secs(30);
-
-/// Una rilevazione singola.
-#[derive(Clone)]
-pub struct Violation {
-    pub reason: String,
-    pub signature: String,
-}
-
-#[derive(Clone)]
-struct Suspect {
-    reason: String,
-    signature: String,
-}
-
-/// Stato condiviso fra il thread di scansione e i comandi Tauri.
+/// Stato condiviso fra il thread di heartbeat e i comandi Tauri.
 #[derive(Default)]
 pub struct AntiCheatState {
     /// Steam hex risolto dal frontend; finché è `None` non si manda heartbeat.
     pub steam_hex: Option<String>,
-    /// Violazioni correnti (sticky: accumulate per la sessione, dedup per
-    /// signature). Più processi sospetti possono coesistere.
-    pub violations: Vec<Violation>,
     /// Nonce corrente del challenge rotante (aggiornato dalla risposta heartbeat).
     pub nonce: String,
     /// Esito dell'ultima verifica challenge lato server (heartbeat `trusted`).
@@ -81,297 +57,17 @@ pub fn solve_challenge(secret: &str, nonce: &str) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
-/// PID di tutti i processi `redm*` attivi (il gioco usa anche dei subprocess).
-fn find_redm_pids(sys: &sysinfo::System) -> Vec<u32> {
-    sys.processes()
-        .values()
-        .filter(|p| {
-            p.name()
-                .to_string_lossy()
-                .to_lowercase()
-                .starts_with("redm")
-        })
-        .map(|p| p.pid().as_u32())
-        .collect()
-}
-
-/// Nome eseguibile (lowercase) di un PID, o "pid:N" se non risolvibile.
-fn pid_name(sys: &sysinfo::System, pid: u32) -> String {
-    sys.process(sysinfo::Pid::from_u32(pid))
-        .map(|p| p.name().to_string_lossy().to_lowercase())
-        .unwrap_or_else(|| format!("pid:{}", pid))
-}
-
-// ── Scansione handle esterni (Windows) ───────────────────────────────────────
-#[cfg(windows)]
-mod win {
-    use super::*;
-    use std::collections::HashSet;
-    use windows::core::BOOL;
-    use windows::Wdk::System::SystemInformation::{
-        NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS,
-    };
-    use windows::Win32::Foundation::{
-        CloseHandle, HWND, LPARAM, STATUS_INFO_LENGTH_MISMATCH,
-    };
-    use windows::Win32::System::Threading::{
-        GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_OPERATION,
-        PROCESS_VM_READ, PROCESS_VM_WRITE,
-    };
-    use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetClassNameW, GetWindowThreadProcessId,
-    };
-
-    /// SystemExtendedHandleInformation (non esposta come costante dal crate).
-    const SYSTEM_EXTENDED_HANDLE_INFORMATION: SYSTEM_INFORMATION_CLASS =
-        SYSTEM_INFORMATION_CLASS(64);
-
-    /// Eseguibile in una directory di sistema Windows protetta (non scrivibile
-    /// da utente non-admin). Tutti i processi OS (smss.exe, csrss.exe, lsass.exe,
-    /// svchost.exe, MsMpEng.exe, …) vivono qui: filtra l'intera classe di falsi
-    /// positivi di sistema in modo robusto (un finto "smss.exe" in una cartella
-    /// utente NON matcha, a differenza dell'allowlist per nome).
-    fn is_system_path(path: &str) -> bool {
-        path.contains("\\windows\\system32\\")
-            || path.contains("\\windows\\syswow64\\")
-            || path.contains("\\windows\\winsxs\\")
-    }
-
-    // Le struct EX non sono definite nel crate `windows`: le replichiamo (layout x64).
-    #[repr(C)]
-    struct SystemHandleInformationEx {
-        number_of_handles: usize,
-        _reserved: usize,
-        // SystemHandleTableEntryInfoEx handles[1] segue qui.
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct SystemHandleTableEntryInfoEx {
-        object: *mut core::ffi::c_void,
-        unique_process_id: usize,
-        handle_value: usize,
-        granted_access: u32,
-        _creator_back_trace_index: u16,
-        _object_type_index: u16,
-        _handle_attributes: u32,
-        _reserved: u32,
-    }
-
-    /// Snapshot globale di tutti gli handle aperti nel sistema.
-    fn query_handles() -> Option<Vec<u8>> {
-        let mut buf = vec![0u8; 1024 * 1024];
-        for _ in 0..16 {
-            let mut return_len: u32 = 0;
-            let status = unsafe {
-                NtQuerySystemInformation(
-                    SYSTEM_EXTENDED_HANDLE_INFORMATION,
-                    buf.as_mut_ptr() as *mut core::ffi::c_void,
-                    buf.len() as u32,
-                    &mut return_len,
-                )
-            };
-            if status == STATUS_INFO_LENGTH_MISMATCH {
-                let needed = return_len as usize;
-                let new_size = if needed > buf.len() {
-                    needed + 0x20000
-                } else {
-                    buf.len() * 2
-                };
-                buf.resize(new_size, 0);
-                continue;
-            }
-            return if status.is_ok() { Some(buf) } else { None };
-        }
-        None
-    }
-
-    /// Trova i processi terzi che possiedono un handle con accesso di lettura
-    /// memoria verso `redm.exe`. Owner non in allowlist ⇒ sospetto.
-    pub fn scan_external_handles(sys: &sysinfo::System, redm_pids: &[u32]) -> Vec<Suspect> {
-        let mut suspects = Vec::new();
-        if redm_pids.is_empty() {
-            return suspects;
-        }
-
-        let our_pid = unsafe { GetCurrentProcessId() };
-        let vm_mask = PROCESS_VM_READ.0 | PROCESS_VM_WRITE.0 | PROCESS_VM_OPERATION.0;
-
-        // 1. Apri un handle a ciascun processo redm: ci serve per identificare,
-        //    nello snapshot, il puntatore all'oggetto kernel del processo gioco.
-        let mut my_handles = Vec::new(); // (HANDLE, handle_value as usize)
-        for &pid in redm_pids {
-            if let Ok(h) = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) } {
-                my_handles.push((h, h.0 as usize));
-            }
-        }
-        if my_handles.is_empty() {
-            return suspects;
-        }
-
-        // 2. Snapshot DOPO l'apertura (così i nostri handle compaiono).
-        let buf = match query_handles() {
-            Some(b) => b,
-            None => {
-                for (h, _) in &my_handles {
-                    let _ = unsafe { CloseHandle(*h) };
-                }
-                return suspects;
-            }
-        };
-
-        let base = buf.as_ptr();
-        let header =
-            unsafe { std::ptr::read_unaligned(base as *const SystemHandleInformationEx) };
-        let count = header.number_of_handles;
-        let entries =
-            unsafe { base.add(std::mem::size_of::<SystemHandleInformationEx>()) }
-                as *const SystemHandleTableEntryInfoEx;
-
-        let my_handle_values: HashSet<usize> = my_handles.iter().map(|(_, v)| *v).collect();
-
-        // 3. Object pointer dei processi redm (le nostre voci nello snapshot).
-        let mut redm_objects: HashSet<usize> = HashSet::new();
-        for i in 0..count {
-            let e = unsafe { std::ptr::read_unaligned(entries.add(i)) };
-            if e.unique_process_id as u32 == our_pid && my_handle_values.contains(&e.handle_value) {
-                redm_objects.insert(e.object as usize);
-            }
-        }
-
-        // 4. Chi altro punta a quegli oggetti con accesso di lettura memoria?
-        let redm_set: HashSet<u32> = redm_pids.iter().copied().collect();
-        let mut reported: HashSet<String> = HashSet::new();
-        if !redm_objects.is_empty() {
-            for i in 0..count {
-                let e = unsafe { std::ptr::read_unaligned(entries.add(i)) };
-                let owner = e.unique_process_id as u32;
-                if owner == our_pid || owner == 0 || owner == 4 || redm_set.contains(&owner) {
-                    continue;
-                }
-                if !redm_objects.contains(&(e.object as usize)) {
-                    continue;
-                }
-                if e.granted_access & vm_mask == 0 {
-                    continue;
-                }
-                let proc = sys.process(sysinfo::Pid::from_u32(owner));
-                let name = proc
-                    .map(|p| p.name().to_string_lossy().to_lowercase())
-                    .unwrap_or_else(|| format!("pid:{}", owner));
-                let path = proc
-                    .and_then(|p| p.exe())
-                    .map(|p| p.to_string_lossy().to_lowercase())
-                    .unwrap_or_default();
-                // Salta gli owner legittimi:
-                //  - path in System32/SysWOW64/WinSxS (processi OS normali);
-                //  - path NON leggibile (vuoto) → processo protetto PPL/VSM o a
-                //    privilegio superiore al launcher (smss, lsaiso, fontdrvhost,
-                //    audiodg, …): un dumper user-mode gira alla stessa integrità
-                //    dell'utente e il suo path è leggibile, quindi questo elimina
-                //    l'intera classe di falsi positivi di sistema. (Trade-off: un
-                //    dumper lanciato come admin avrebbe il path non leggibile da un
-                //    launcher non elevato → eseguire il launcher elevato per coprirlo.)
-                //  - owner esplicitamente in allowlist.
-                if is_system_path(&path)
-                    || path.is_empty()
-                    || super::remote::is_owner_allowed(&name)
-                    || reported.contains(&name)
-                {
-                    continue;
-                }
-                reported.insert(name.clone());
-                suspects.push(Suspect {
-                    reason: format!("Handle di lettura memoria su redm.exe da {}", name),
-                    signature: format!("ExternalHandle:{}", name),
-                });
-            }
-        }
-
-        for (h, _) in &my_handles {
-            let _ = unsafe { CloseHandle(*h) };
-        }
-        suspects
-    }
-
-    /// Callback EnumWindows: raccoglie (class_name, owner_pid) per finestre con
-    /// classe in blacklist.
-    unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let hits = unsafe { &mut *(lparam.0 as *mut Vec<(String, u32)>) };
-        let mut buf = [0u16; 256];
-        let len = unsafe { GetClassNameW(hwnd, &mut buf) };
-        if len > 0 {
-            let class = String::from_utf16_lossy(&buf[..len as usize]).to_lowercase();
-            if super::remote::window_block_matches(&class) {
-                let mut pid = 0u32;
-                unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
-                hits.push((class, pid));
-            }
-        }
-        BOOL(1) // continua l'enumerazione
-    }
-
-    /// Cerca finestre con class name note di tool di dumping.
-    pub fn scan_window_classes(sys: &sysinfo::System) -> Vec<Suspect> {
-        let mut hits: Vec<(String, u32)> = Vec::new();
-        let _ = unsafe {
-            EnumWindows(
-                Some(enum_proc),
-                LPARAM(&mut hits as *mut Vec<(String, u32)> as isize),
-            )
-        };
-        hits.into_iter()
-            .map(|(class, pid)| {
-                let owner = if pid != 0 {
-                    pid_name(sys, pid)
-                } else {
-                    "sconosciuto".to_string()
-                };
-                Suspect {
-                    reason: format!("Window class di dumping '{}' ({})", class, owner),
-                    signature: format!("WindowClass:{}", class),
-                }
-            })
-            .collect()
-    }
-}
-
-#[cfg(not(windows))]
-fn scan_external_handles(_sys: &sysinfo::System, _redm_pids: &[u32]) -> Vec<Suspect> {
-    Vec::new()
-}
-#[cfg(not(windows))]
-fn scan_window_classes(_sys: &sysinfo::System) -> Vec<Suspect> {
-    Vec::new()
-}
-
 /// Invia l'heartbeat al bridge (chiamato dal thread di background, reqwest blocking).
+/// Gli header `status`/`reason`/`signature` restano nel protocollo per
+/// compatibilità con il bridge, ma il launcher non ha più nulla da segnalare.
 fn send_heartbeat(client: &reqwest::blocking::Client, handle: &AntiCheatHandle) {
-    let (steam, status, reason, signature, nonce) = {
+    let (steam, nonce) = {
         let st = handle.0.lock().unwrap();
         let steam = match &st.steam_hex {
             Some(s) => s.clone(),
             None => return, // identità non ancora nota → niente heartbeat
         };
-        let (status, reason, signature) = if st.violations.is_empty() {
-            ("ok", String::new(), String::new())
-        } else {
-            // Lista completa in un solo header: il server logga tutti i processi.
-            let reason = st
-                .violations
-                .iter()
-                .map(|v| v.reason.clone())
-                .collect::<Vec<_>>()
-                .join(" | ");
-            let signature = st
-                .violations
-                .iter()
-                .map(|v| v.signature.clone())
-                .collect::<Vec<_>>()
-                .join(";");
-            ("violation", reason, signature)
-        };
-        (steam, status, reason, signature, st.nonce.clone())
+        (steam, st.nonce.clone())
     };
 
     let auth = solve_challenge(crate::LAUNCHER_HMAC_SECRET, &nonce);
@@ -381,9 +77,9 @@ fn send_heartbeat(client: &reqwest::blocking::Client, handle: &AntiCheatHandle) 
         .post(&url)
         .header(AUTHORIZATION, format!("Bearer {}", crate::BRIDGE_API_KEY))
         .header("steam", &steam)
-        .header("status", status)
-        .header("reason", &reason)
-        .header("signature", &signature)
+        .header("status", "ok")
+        .header("reason", "")
+        .header("signature", "")
         .header("auth", &auth)
         .send();
 
@@ -408,7 +104,7 @@ fn send_heartbeat(client: &reqwest::blocking::Client, handle: &AntiCheatHandle) 
     }
 }
 
-/// Avvia il thread di background: scan + heartbeat ogni [`SCAN_INTERVAL`].
+/// Avvia il thread di background: heartbeat ogni [`HEARTBEAT_INTERVAL`].
 pub fn spawn(handle: AntiCheatHandle) {
     std::thread::spawn(move || {
         let client = reqwest::blocking::Client::builder()
@@ -418,84 +114,7 @@ pub fn spawn(handle: AntiCheatHandle) {
             .build()
             .ok();
 
-        // Client SEPARATO che VALIDA i certificati per scaricare l'allowlist
-        // firmata dal CDN: la firma minisign garantisce già l'integrità, ma il
-        // TLS valido è difesa in profondità a costo nullo (a differenza
-        // dell'heartbeat sopra, qui non serve accettare certificati invalidi).
-        let allowlist_client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(8))
-            .user_agent(crate::USER_AGENT)
-            .build()
-            .ok();
-
-        // Last-known-good su disco prima della prima fetch di rete.
-        remote::load_cache();
-
-        let mut last_scan: Option<std::time::Instant> = None;
-
         loop {
-            // Lo scan pesante (refresh processi + handle table globale + finestre)
-            // gira ogni SCAN_INTERVAL, non ad ogni heartbeat: è la parte che
-            // "suona" da dumper agli antivirus. L'heartbeat sotto resta a
-            // HEARTBEAT_INTERVAL per non far scattare il binding-kick.
-            let scan_due = last_scan.map_or(true, |t| t.elapsed() >= SCAN_INTERVAL);
-            if scan_due {
-                last_scan = Some(std::time::Instant::now());
-
-                // Aggiorna l'allowlist (GET condizionale, ~zero costo se invariata)
-                // PRIMA di scansionare, così lo scan usa i nomi più recenti.
-                if let Some(c) = &allowlist_client {
-                    remote::refresh(c);
-                }
-
-                // Riconciliazione a caldo: le violazioni sono sticky, ma se un
-                // processo è stato AGGIUNTO all'allowlist (tuning via CDN) va
-                // tolto dalla lista senza richiedere un riavvio del launcher.
-                // Solo gli `ExternalHandle:<name>` ora in allowlist vengono
-                // rimossi: i dumper veri non sono in allowlist e restano sticky.
-                {
-                    let mut st = handle.0.lock().unwrap();
-                    st.violations.retain(|v| {
-                        match v.signature.strip_prefix("ExternalHandle:") {
-                            Some(name) => !remote::is_owner_allowed(name),
-                            None => true,
-                        }
-                    });
-                }
-
-                let mut sys = sysinfo::System::new();
-                sys.refresh_processes(sysinfo::ProcessesToUpdate::All, false);
-                let redm_pids = find_redm_pids(&sys);
-
-                if !redm_pids.is_empty() {
-                    let mut suspects = Vec::new();
-                    #[cfg(windows)]
-                    {
-                        suspects.extend(win::scan_external_handles(&sys, &redm_pids));
-                        suspects.extend(win::scan_window_classes(&sys));
-                    }
-                    #[cfg(not(windows))]
-                    {
-                        suspects.extend(scan_external_handles(&sys, &redm_pids));
-                        suspects.extend(scan_window_classes(&sys));
-                    }
-
-                    if !suspects.is_empty() {
-                        let mut st = handle.0.lock().unwrap();
-                        // Sticky: accumula ogni sospetto senza duplicare (per signature),
-                        // così la lista cresce man mano che più processi vengono rilevati.
-                        for s in suspects {
-                            if !st.violations.iter().any(|v| v.signature == s.signature) {
-                                st.violations.push(Violation {
-                                    reason: s.reason,
-                                    signature: s.signature,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-
             if let Some(client) = &client {
                 send_heartbeat(client, &handle);
             }

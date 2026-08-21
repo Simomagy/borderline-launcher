@@ -431,29 +431,15 @@ fn get_heartbeat_counts(state: tauri::State<'_, AntiCheatHandle>) -> serde_json:
     serde_json::json!({ "players": st.players, "launchers": st.launchers })
 }
 
-/// Stato anti-cheat corrente: usato dal frontend per abilitare/bloccare GIOCA.
-/// `authenticated` = challenge verificato dal server E heartbeat già stabilito;
-/// `violation` = dumper rilevato. GIOCA va abilitato solo se authenticated && !violation.
+/// Stato del canale d'integrità: usato dal frontend per abilitare GIOCA.
+/// `authenticated` = challenge verificato dal server E heartbeat già stabilito.
+/// Il launcher non ispeziona più i processi terzi (vedi `anticheat.rs`), quindi
+/// non esiste più uno stato di "violazione" lato client.
 #[tauri::command]
 fn get_anticheat_status(state: tauri::State<'_, AntiCheatHandle>) -> serde_json::Value {
     let st = state.0.lock().unwrap();
     let authenticated = st.trusted && !st.nonce.is_empty() && st.steam_hex.is_some();
-    let violations: Vec<serde_json::Value> = st
-        .violations
-        .iter()
-        .map(|v| serde_json::json!({ "reason": v.reason, "signature": v.signature }))
-        .collect();
-    let violation = !violations.is_empty();
-    // Back-compat: reason/signature del primo sospetto per i consumer legacy.
-    let (reason, signature) = match st.violations.first() {
-        Some(v) => (v.reason.clone(), v.signature.clone()),
-        None => (String::new(), String::new()),
-    };
     serde_json::json!({
-        "violation": violation,
-        "violations": violations,
-        "reason": reason,
-        "signature": signature,
         "trusted": st.trusted,
         "authenticated": authenticated,
     })
