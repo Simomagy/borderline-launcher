@@ -75,12 +75,12 @@ fn check_processes() -> serde_json::Value {
 fn spawn_detached(uri: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        // Se l'URI ha uno schema e questo NON e' registrato (o punta a un exe
-        // inesistente), fermati subito con un errore utile invece di delegare a
-        // una shell che fallira' in silenzio davanti al giocatore. Vale per
-        // redm://, discord://, steam:// e ts3server:// allo stesso modo.
+        // Se l'URI ha uno schema e questo non risulta dichiarato da nessuna
+        // parte, fermati subito con un errore utile invece di delegare a una
+        // shell che fallira' in silenzio davanti al giocatore. Vale per redm://,
+        // discord://, steam:// e ts3server:// allo stesso modo.
         if let Some(scheme) = uri_scheme(uri) {
-            if !protocol_handler_ok(scheme) {
+            if !scheme_declared(scheme) {
                 return Err(format!(
                     "Nessuna applicazione registrata per {scheme}:// — installazione mancante o danneggiata"
                 ));
@@ -275,24 +275,78 @@ fn expand_env(s: &str) -> String {
     out
 }
 
-/// Lo schema URL ha un handler registrato **e** utilizzabile?
-///
-/// Serve a sapere PRIMA se delegare l'URI alla shell ha senso: `explorer.exe`
-/// fa il dispatch in modo asincrono e il suo `spawn()` riesce comunque, quindi
-/// un handler assente o che punta a un exe cancellato non si manifesta come
-/// errore per noi - solo come il box "explorer.exe - Applicazione non trovata"
-/// in faccia al giocatore (bug osservato con `ts3server://` non registrato).
-///
-/// Fail-safe: in caso di dubbio (comando non interpretabile, eseguibile senza
-/// directory risolto via PATH, handler di app pacchettizzata) ritorna `true`,
-/// cosi' non si blocca mai un avvio che funzionerebbe. Ritorna `false` solo nei
-/// due casi netti: chiave assente, o comando che punta a un file inesistente.
+/// Classi (ProgId) che possono gestire uno schema URL, nell'ordine in cui
+/// Windows le consulta. Sono TRE meccanismi diversi e un'app puo' usarne uno
+/// qualsiasi:
+///  1. `UserChoice` - l'associazione scelta esplicitamente dall'utente;
+///  2. lo schema stesso - forma classica `<scheme>\shell\open\command`
+///     (Steam, Discord, TeamSpeak);
+///  3. `RegisteredApplications` -> `Capabilities\URLAssociations` - forma usata
+///     da RedM: la chiave `redm` dichiara solo `URL Protocol` e il comando vive
+///     nella ProgId `RedM.ProtocolHandler`. Guardare solo il punto 2 qui fa
+///     concludere "non registrato" per un handler che funziona benissimo.
 #[cfg(target_os = "windows")]
-fn protocol_handler_ok(scheme: &str) -> bool {
+fn scheme_classes(scheme: &str) -> Vec<String> {
     use winreg::enums::*;
     use winreg::RegKey;
 
-    let tail = format!(r"{scheme}\shell\open\command");
+    let mut out = Vec::new();
+
+    let user_choice = format!(
+        r"Software\Microsoft\Windows\CurrentVersion\Shell\Associations\UrlAssociations\{scheme}\UserChoice"
+    );
+    if let Ok(k) = RegKey::predef(HKEY_CURRENT_USER).open_subkey(&user_choice) {
+        if let Ok(progid) = k.get_value::<String, _>("ProgId") {
+            out.push(progid);
+        }
+    }
+
+    out.push(scheme.to_string());
+
+    for root in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        let Ok(apps) = RegKey::predef(root).open_subkey(r"Software\RegisteredApplications") else {
+            continue;
+        };
+        for name in apps.enum_values().flatten().map(|(n, _)| n) {
+            let Ok(caps_path) = apps.get_value::<String, _>(&name) else { continue };
+            let Ok(caps) = RegKey::predef(root).open_subkey(format!(r"{caps_path}\URLAssociations"))
+            else {
+                continue;
+            };
+            if let Ok(progid) = caps.get_value::<String, _>(scheme) {
+                out.push(progid);
+            }
+        }
+    }
+
+    out
+}
+
+/// La classe esiste nel registro (classi dell'utente o vista unita HKCR)?
+#[cfg(target_os = "windows")]
+fn class_exists(class: &str) -> bool {
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(format!(r"Software\Classes\{class}"))
+        .is_ok()
+        || RegKey::predef(HKEY_CLASSES_ROOT).open_subkey(class).is_ok()
+}
+
+/// `Some(true)` = la classe ha un `shell\open\command` utilizzabile;
+/// `Some(false)` = ce l'ha ma punta a un file che non esiste; `None` = nessun
+/// comando (classe assente o senza `shell\open\command`).
+///
+/// Fail-safe: comando non interpretabile, eseguibile senza directory (risolto
+/// via PATH) o handler di app pacchettizzata (`DelegateExecute`) contano come
+/// utilizzabili - meglio provare che rifiutare un avvio che funzionerebbe.
+#[cfg(target_os = "windows")]
+fn class_command_usable(class: &str) -> Option<bool> {
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    let tail = format!(r"{class}\shell\open\command");
     let roots = [
         (HKEY_CURRENT_USER, format!(r"Software\Classes\{tail}")),
         (HKEY_CLASSES_ROOT, tail),
@@ -300,24 +354,37 @@ fn protocol_handler_ok(scheme: &str) -> bool {
 
     for (root, key) in roots {
         let Ok(k) = RegKey::predef(root).open_subkey(&key) else { continue };
-        // App pacchettizzate: l'esecuzione passa da DelegateExecute e il comando
-        // puo' essere uno stub -> non giudicabile, consideralo buono.
         if k.get_value::<String, _>("DelegateExecute").is_ok() {
-            return true;
+            return Some(true);
         }
         let Ok(cmd) = k.get_value::<String, _>("") else { continue };
-        let Some(exe) = command_exe(&cmd) else { return true };
-        let exe = expand_env(&exe);
-        let p = std::path::Path::new(&exe);
-        if p.is_file() {
-            return true;
+        let Some(exe) = command_exe(&cmd) else { return Some(true) };
+        let path = expand_env(&exe);
+        let path = std::path::Path::new(&path);
+        if path.is_file() || path.parent().is_none_or(|d| d.as_os_str().is_empty()) {
+            return Some(true);
         }
-        // Nome nudo (es. `rundll32.exe`): risolto via PATH, non verificabile.
-        if p.parent().is_none_or(|d| d.as_os_str().is_empty()) {
-            return true;
-        }
+        return Some(false);
     }
-    false
+    None
+}
+
+/// Lo schema e' dichiarato da qualche parte in Windows? Se non lo e', nessuna
+/// shell potra' mai dispatcharlo: e' l'UNICO caso in cui rifiutiamo un avvio.
+/// Volutamente permissivo - il costo di un falso negativo (gioco che non parte)
+/// e' molto piu' alto di quello di un falso positivo (un errore di shell).
+#[cfg(target_os = "windows")]
+fn scheme_declared(scheme: &str) -> bool {
+    scheme_classes(scheme).iter().any(|c| class_exists(c))
+}
+
+/// Lo schema si risolve a un eseguibile che esiste davvero? Usato solo dove c'e'
+/// un'alternativa migliore da scegliere (TeamSpeak), mai per bloccare un avvio.
+#[cfg(target_os = "windows")]
+fn scheme_resolves_to_exe(scheme: &str) -> bool {
+    scheme_classes(scheme)
+        .iter()
+        .any(|c| class_command_usable(c) == Some(true))
 }
 
 /// Risolve l'eseguibile di TeamSpeak: prima dal registro (qualsiasi cartella
@@ -369,20 +436,23 @@ fn launch_teamspeak() -> Result<(), String> {
         let url = format!("ts3server://{TEAMSPEAK_HOST}");
 
         // Percorso primario: handler di protocollo via shell, coerente con
-        // redm/discord/steam. Connette al server in un colpo solo. Se lo schema
-        // non e' registrato `spawn_detached` ritorna Err (non delega alla shell),
-        // quindi al fallback qui sotto si arriva davvero.
-        if spawn_detached(&url).is_ok() {
+        // redm/discord/steam — ma solo se lo schema si risolve davvero a un
+        // eseguibile presente. Senza questo controllo un `ts3server://` rotto
+        // farebbe comunque ritornare Ok (explorer fa il dispatch in modo
+        // asincrono) e il fallback qui sotto non verrebbe mai raggiunto.
+        if scheme_resolves_to_exe("ts3server") && spawn_detached(&url).is_ok() {
             return Ok(());
         }
 
-        // Fallback: avvia l'eseguibile risolto passando l'URL come argomento.
-        // È esattamente ciò che farebbe l'handler (`ts3client "%1"`), quindi la
-        // connessione automatica al server funziona lo stesso.
+        // Handler assente o rotto: avvia l'eseguibile risolto passando l'URL come
+        // argomento. È esattamente ciò che farebbe l'handler (`ts3client "%1"`),
+        // quindi la connessione automatica al server funziona lo stesso.
         if let Some(path) = teamspeak_exe() {
             return spawn_detached_exe(&path, &url);
         }
-        Err("TeamSpeak non trovato: installalo o aprilo a mano".to_string())
+
+        // Ultima spiaggia: prova comunque la shell.
+        spawn_detached(&url)
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -698,4 +768,32 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+
+    /// Diagnostica: stampa come Windows risolve gli schemi che il launcher usa
+    /// su QUESTA macchina. Dipende dalle app installate, quindi non asserisce
+    /// nulla di universale — serve a capire cosa vede il launcher quando un
+    /// giocatore riporta "Nessuna applicazione registrata per X://".
+    ///
+    /// `cargo test scheme_resolution -- --ignored --nocapture`
+    #[test]
+    #[ignore = "dipende dalle app installate sulla macchina"]
+    fn scheme_resolution() {
+        for scheme in ["redm", "discord", "steam", "ts3server"] {
+            let classi = scheme_classes(scheme);
+            eprintln!(
+                "{scheme:<10} dichiarato={:<5} exe_ok={:<5} classi={:?}",
+                scheme_declared(scheme),
+                scheme_resolves_to_exe(scheme),
+                classi,
+            );
+            for c in &classi {
+                eprintln!("             {c} -> esiste={:?} comando={:?}", class_exists(c), class_command_usable(c));
+            }
+        }
+    }
 }
