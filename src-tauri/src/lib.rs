@@ -7,8 +7,8 @@ use tauri::{
     Manager,
 };
 
-mod anticheat;
-use anticheat::AntiCheatHandle;
+mod heartbeat;
+use heartbeat::HeartbeatHandle;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -79,12 +79,12 @@ fn spawn_detached(uri: &str) -> Result<(), String> {
         // parte, fermati subito con un errore utile invece di delegare a una
         // shell che fallira' in silenzio davanti al giocatore. Vale per redm://,
         // discord://, steam:// e ts3server:// allo stesso modo.
-        if let Some(scheme) = uri_scheme(uri) {
-            if !scheme_declared(scheme) {
-                return Err(format!(
-                    "Nessuna applicazione registrata per {scheme}:// — installazione mancante o danneggiata"
-                ));
-            }
+        if let Some(scheme) = uri_scheme(uri)
+            && !scheme_declared(scheme)
+        {
+            return Err(format!(
+                "Nessuna applicazione registrata per {scheme}:// — installazione mancante o danneggiata"
+            ));
         }
 
         // Metodo 1: explorer.exe delega all'istanza shell già in esecuzione (fuori dal job object).
@@ -295,10 +295,10 @@ fn scheme_classes(scheme: &str) -> Vec<String> {
     let user_choice = format!(
         r"Software\Microsoft\Windows\CurrentVersion\Shell\Associations\UrlAssociations\{scheme}\UserChoice"
     );
-    if let Ok(k) = RegKey::predef(HKEY_CURRENT_USER).open_subkey(&user_choice) {
-        if let Ok(progid) = k.get_value::<String, _>("ProgId") {
-            out.push(progid);
-        }
+    if let Ok(k) = RegKey::predef(HKEY_CURRENT_USER).open_subkey(&user_choice)
+        && let Ok(progid) = k.get_value::<String, _>("ProgId")
+    {
+        out.push(progid);
     }
 
     out.push(scheme.to_string());
@@ -525,7 +525,6 @@ async fn check_player_access(steam_hex: String) -> Result<String, String> {
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
-        .danger_accept_invalid_certs(true)
         .user_agent(USER_AGENT)
         .build()
         .map_err(|e| e.to_string())?;
@@ -552,7 +551,7 @@ async fn check_player_access(steam_hex: String) -> Result<String, String> {
 /// ottiene l'autorizzazione e quindi non può connettersi.
 #[tauri::command]
 async fn authorize_entry(
-    state: tauri::State<'_, AntiCheatHandle>,
+    state: tauri::State<'_, HeartbeatHandle>,
     steam_hex: String,
 ) -> Result<String, String> {
     // Attendi un nonce valido (il thread heartbeat lo popola ad ogni risposta).
@@ -565,13 +564,12 @@ async fn authorize_entry(
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
-    let auth = anticheat::solve_challenge(LAUNCHER_HMAC_SECRET, &nonce);
+    let auth = heartbeat::solve_challenge(LAUNCHER_HMAC_SECRET, &nonce);
 
     let url = format!("{}/api/v1/authorize-entry", BRIDGE_URL);
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
-        .danger_accept_invalid_certs(true)
         .user_agent(USER_AGENT)
         .build()
         .map_err(|e| e.to_string())?;
@@ -600,7 +598,6 @@ async fn fetch_bridge(endpoint: String) -> Result<String, String> {
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
-        .danger_accept_invalid_certs(true)
         .user_agent(USER_AGENT)
         .build()
         .map_err(|e| e.to_string())?;
@@ -624,7 +621,7 @@ async fn fetch_bridge(endpoint: String) -> Result<String, String> {
 /// momento il thread inizia a mandare l'heartbeat (con scan + challenge).
 #[tauri::command]
 fn set_launcher_identity(
-    state: tauri::State<'_, AntiCheatHandle>,
+    state: tauri::State<'_, HeartbeatHandle>,
     steam_hex: String,
 ) -> Result<(), String> {
     state.0.lock().map_err(|e| e.to_string())?.steam_hex = Some(steam_hex);
@@ -633,17 +630,17 @@ fn set_launcher_identity(
 
 /// Conteggio aggregato dall'ultimo heartbeat del thread (per la Rich Presence).
 #[tauri::command]
-fn get_heartbeat_counts(state: tauri::State<'_, AntiCheatHandle>) -> serde_json::Value {
+fn get_heartbeat_counts(state: tauri::State<'_, HeartbeatHandle>) -> serde_json::Value {
     let st = state.0.lock().unwrap();
     serde_json::json!({ "players": st.players, "launchers": st.launchers })
 }
 
 /// Stato del canale d'integrità: usato dal frontend per abilitare GIOCA.
 /// `authenticated` = challenge verificato dal server E heartbeat già stabilito.
-/// Il launcher non ispeziona più i processi terzi (vedi `anticheat.rs`), quindi
+/// Il launcher non ispeziona più i processi terzi (vedi `heartbeat.rs`), quindi
 /// non esiste più uno stato di "violazione" lato client.
 #[tauri::command]
-fn get_anticheat_status(state: tauri::State<'_, AntiCheatHandle>) -> serde_json::Value {
+fn get_heartbeat_status(state: tauri::State<'_, HeartbeatHandle>) -> serde_json::Value {
     let st = state.0.lock().unwrap();
     let authenticated = st.trusted && !st.nonce.is_empty() && st.steam_hex.is_some();
     serde_json::json!({
@@ -695,15 +692,15 @@ fn update_discord_presence(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let anticheat = AntiCheatHandle::default();
-    anticheat::spawn(anticheat.clone());
+    let heartbeat = HeartbeatHandle::default();
+    heartbeat::spawn(heartbeat.clone());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .manage(DiscordPresence::default())
-        .manage(anticheat)
+        .manage(heartbeat)
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Mostra Launcher", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Esci", true, None::<&str>)?;
@@ -763,7 +760,7 @@ pub fn run() {
             authorize_entry,
             set_launcher_identity,
             get_heartbeat_counts,
-            get_anticheat_status,
+            get_heartbeat_status,
             update_discord_presence,
         ])
         .run(tauri::generate_context!())
@@ -773,6 +770,39 @@ pub fn run() {
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
+
+    /// Verifica che il client di produzione (rustls, SENZA bypass della
+    /// validazione) completi l'handshake TLS verso `BRIDGE_URL` e riceva 2xx.
+    /// rustls e' piu' severo di curl/openssl: un certificato che passa da riga
+    /// di comando puo' comunque essere rifiutato qui. Da rilanciare ogni volta
+    /// che `BRIDGE_URL` cambia o che si tocca il reverse proxy.
+    ///
+    /// `cargo test bridge_tls -- --ignored --nocapture`
+    #[test]
+    #[ignore = "rete: colpisce il bridge di produzione"]
+    fn bridge_tls() {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(8))
+            .user_agent(USER_AGENT)
+            .build()
+            .expect("costruzione client");
+
+        let resp = client
+            .get(format!("{BRIDGE_URL}/api/v1/health"))
+            .header(AUTHORIZATION, format!("Bearer {BRIDGE_API_KEY}"))
+            .send()
+            .expect("handshake TLS / rete fallita");
+
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        eprintln!("{BRIDGE_URL}/api/v1/health -> {status}");
+        eprintln!("  {}", &body[..body.len().min(140)]);
+        assert!(status.is_success(), "atteso 2xx, ricevuto {status}");
+        assert!(
+            BRIDGE_URL.starts_with("https://"),
+            "BRIDGE_URL non e' https: il traffico viaggia ancora in chiaro"
+        );
+    }
 
     /// Diagnostica: stampa come Windows risolve gli schemi che il launcher usa
     /// su QUESTA macchina. Dipende dalle app installate, quindi non asserisce
