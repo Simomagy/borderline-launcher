@@ -690,18 +690,50 @@ fn update_discord_presence(
     Ok(())
 }
 
+/// Riporta la finestra principale davanti da QUALSIASI stato: nascosta nel
+/// tray (`hide()`), minimizzata nella taskbar, o semplicemente coperta da altre
+/// finestre. L'ordine conta: `set_focus()` su una finestra nascosta non fa
+/// nulla, e `show()` da solo non ripristina una finestra minimizzata.
+fn focus_main_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let heartbeat = HeartbeatHandle::default();
-    heartbeat::spawn(heartbeat.clone());
+    let heartbeat_thread = heartbeat.clone();
 
     tauri::Builder::default()
+        // DEVE restare il PRIMO plugin registrato: il suo hook di setup gira
+        // prima di tutti gli altri, quindi una seconda istanza viene terminata
+        // prima di costruire finestre, tray o webview.
+        //
+        // Senza questo lock si aprivano N launcher sullo stesso PC, con due
+        // conseguenze: N volte le chiamate all'API, e soprattutto autenticazione
+        // rotta — il nonce del challenge ruota a ogni heartbeat, quindi due
+        // istanze con lo stesso Steam hex si rubano il nonce a vicenda e l'HMAC
+        // dell'altra diventa stale (`trusted` = false).
+        //
+        // Il callback gira nell'istanza GIA' attiva quando l'utente rilancia
+        // l'exe: al posto di una finestra nuova, riporta davanti quella che c'e'.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            focus_main_window(app);
+        }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .manage(DiscordPresence::default())
         .manage(heartbeat)
-        .setup(|app| {
+        .setup(move |app| {
+            // Avviato qui e non prima del `Builder`: una seconda istanza esce
+            // durante la costruzione e non deve aver fatto partire un thread di
+            // heartbeat concorrente nel frattempo.
+            heartbeat::spawn(heartbeat_thread);
+
             let show = MenuItem::with_id(app, "show", "Mostra Launcher", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Esci", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &quit])?;
@@ -711,12 +743,7 @@ pub fn run() {
                 .menu(&menu)
                 .tooltip("BorderlineRP Launcher")
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(win) = app.get_webview_window("main") {
-                            let _ = win.show();
-                            let _ = win.set_focus();
-                        }
-                    }
+                    "show" => focus_main_window(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -727,11 +754,7 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        let app = tray.app_handle();
-                        if let Some(win) = app.get_webview_window("main") {
-                            let _ = win.show();
-                            let _ = win.set_focus();
-                        }
+                        focus_main_window(tray.app_handle());
                     }
                 })
                 .build(app)?;
