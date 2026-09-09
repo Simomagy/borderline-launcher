@@ -38,16 +38,33 @@ fn teamspeak_running() -> bool {
     })
 }
 
+/// Plugin TS3 che usano la stessa porta 30125 o lo stesso protocollo: con uno di questi
+/// installato Borderline Voice non parte. Il launcher guida il giocatore a disinstallarli.
+const CONFLICTING: [(&str, &str); 2] = [("yaca_win64.dll", "YaCA"), ("SaltyChat_win64.dll", "SaltyChat")];
+
 /// Stato ritornato al frontend:
 /// `ok` gia' aggiornato, `installed` appena installato, `restart_needed` scaricato ma TS3
-/// e' aperto, `none` il manifest non ha `voice_plugin`, `error` con `message`.
-/// `yaca_present` segnala il vecchio plugin YaCA nella stessa cartella (stessa porta: va disabilitato).
+/// e' aperto, `conflict` c'e' un plugin incompatibile (lista in `conflicts`),
+/// `none` il manifest non ha `voice_plugin`, `error` con `message`.
+/// Sempre presenti: `conflicts` e `teamspeak_running`, cosi' la guida nel launcher
+/// puo' verificare ogni passo senza altre chiamate.
 #[tauri::command]
 pub async fn ensure_voice_plugin() -> Value {
-    match ensure().await {
+    let dir = plugin_dir();
+    let conflicts: Vec<&str> = dir
+        .as_ref()
+        .map(|d| CONFLICTING.iter().filter(|(f, _)| d.join(f).exists()).map(|(_, n)| *n).collect())
+        .unwrap_or_default();
+    let mut v = match ensure().await {
         Ok(v) => v,
         Err(e) => json!({ "status": "error", "message": e }),
+    };
+    if !conflicts.is_empty() && v["status"] != "error" {
+        v["status"] = json!("conflict");
     }
+    v["conflicts"] = json!(conflicts);
+    v["teamspeak_running"] = json!(teamspeak_running());
+    v
 }
 
 async fn ensure() -> Result<Value, String> {

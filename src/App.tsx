@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { PlayButton } from "./PlayButton";
 import LivingBackground from "./LivingBackground";
 import { Poster, PaperHeader, PaperRule, Star, InkStamp, INK, PAPER_NOISE } from "./western";
+import { VoiceGuideModal, voiceBlocked, type VoicePlugin } from "./VoiceGuide";
 import { Copy, Check, Download } from "lucide-react";
 import { motion } from "motion/react";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -23,7 +24,6 @@ interface BanInfo {
 }
 type ServerStatus  = "loading" | "online" | "offline";
 type AccessStatus  = "loading" | "allowed" | "not_allowlisted" | "banned" | "error" | "unknown";
-type VoicePlugin   = { status: "checking" | "ok" | "installed" | "restart_needed" | "none" | "error"; version?: string; message?: string; yaca_present?: boolean };
 
 const win = () => getCurrentWindow();
 
@@ -151,6 +151,7 @@ export default function App() {
   const [redmRunning,    setRedmRunning]    = useState(false);
   const [teamspeakRunning, setTeamspeakRunning] = useState(false);
   const [voicePlugin, setVoicePlugin] = useState<VoicePlugin>({ status: "checking" });
+  const [showVoiceGuide, setShowVoiceGuide] = useState(false);
   const checkVoicePlugin = useCallback(async () => {
     try { setVoicePlugin(await invoke<VoicePlugin>("ensure_voice_plugin")); }
     catch (e) { setVoicePlugin({ status: "error", message: String(e) }); }
@@ -376,8 +377,16 @@ export default function App() {
     return () => { clearInterval(h); clearInterval(p); clearInterval(a); clearInterval(d); clearInterval(c); clearInterval(u); unlisten?.(); };
   }, [initializing, fetchHealth, checkProcesses, recheckAccess, steamHex, checkForUpdates, updatePresence, checkHeartbeat]);
 
+  useEffect(() => {
+    if (initializing) return;
+    if (voiceBlocked(voicePlugin.status)) setShowVoiceGuide(true);
+    else if (voicePlugin.status === "ok" || voicePlugin.status === "installed") {
+      if (voicePlugin.teamspeak_running ?? teamspeakRunning) setShowVoiceGuide(false);
+    }
+  }, [voicePlugin.status, voicePlugin.teamspeak_running, teamspeakRunning, initializing]);
+
   const canPlay =
-    !redmRunning &&
+    !redmRunning && !voiceBlocked(voicePlugin.status) &&
     serverStatus === "online" && steamRunning && teamspeakRunning && discordRunning &&
     (accessStatus === "allowed" || (accessStatus === "banned" && banInfo?.ban_type === "temporary")) &&
     hbStatus.authenticated;
@@ -389,6 +398,7 @@ export default function App() {
     if (!steamRunning)               return "Steam richiesto";
     if (!teamspeakRunning)           return "TeamSpeak richiesto";
     if (!discordRunning)             return "Discord richiesto";
+    if (voiceBlocked(voicePlugin.status)) return "Addon vocale da sistemare";
     if (accessStatus === "not_allowlisted") return "Accesso Negato";
     if (accessStatus === "banned" && banInfo?.ban_type === "permanent") return "Bannato";
     if (accessStatus === "loading")  return "Verifica…";
@@ -525,13 +535,13 @@ export default function App() {
                   }
                 </div>
               ))}
-              <VoicePluginRow state={voicePlugin} retry={checkVoicePlugin} />
+              <VoicePluginRow state={voicePlugin} retry={() => (voiceBlocked(voicePlugin.status) ? setShowVoiceGuide(true) : checkVoicePlugin())} />
               <Ts3Copy />
             </div>
 
             {/* addon vocale: forza il controllo/installazione di Borderline Voice (vedi ensure_voice_plugin) */}
             <button
-              onClick={checkVoicePlugin}
+              onClick={() => (voiceBlocked(voicePlugin.status) ? setShowVoiceGuide(true) : checkVoicePlugin())}
               title="Controlla e installa l'addon vocale Borderline Voice in TeamSpeak"
               className="group mt-3 w-full flex items-center justify-center gap-2 py-2 cursor-pointer transition-all hover:-translate-y-px active:translate-y-0"
               style={{ background: INK.red, color: "#f3e2bd", boxShadow: "0 3px 0 rgba(60,18,8,.55)" }}
@@ -639,6 +649,17 @@ export default function App() {
             </div>
           )}
         </div>
+
+        {/* ══ GUIDA ADDON VOCALE — passi verificati dal launcher, Gioca bloccato finché non è a posto ══ */}
+        {showVoiceGuide && (
+          <VoiceGuideModal
+            state={voicePlugin}
+            teamspeakRunning={teamspeakRunning}
+            onRecheck={() => { checkVoicePlugin(); checkProcesses(); }}
+            onLaunchTeamspeak={() => launch("launch_teamspeak")}
+            onClose={() => setShowVoiceGuide(false)}
+          />
+        )}
 
         {/* ══ UPDATE MODAL ══ */}
         {showUpdateModal && (
@@ -1004,17 +1025,16 @@ function VoicePluginRow({ state, retry }: { state: VoicePlugin; retry: () => voi
   const text =
     state.status === "checking"       ? "…" :
     state.status === "none"           ? "– non pubblicato" :
-    state.yaca_present && good        ? "✗ disabilita YaCA in TS3" :
+    state.status === "conflict"       ? `✗ ${(state.conflicts ?? []).join("/") || "plugin"} in conflitto` :
     state.status === "restart_needed" ? "✗ riavvia TeamSpeak" :
     state.status === "error"          ? "✗ non aggiornato" :
     `✓ v${state.version}`;
-  const ok = good && !state.yaca_present;
   return (
     <div className="flex items-center justify-between">
       <span className="text-serif-sc text-[12px] tracking-wide" style={{ color: INK.text }}>Plugin vocale</span>
-      {ok
+      {good
         ? <span className="text-display text-[13px]" style={{ color: INK.green, transform: "rotate(-5deg)", display: "inline-block" }}>{text}</span>
-        : <button onClick={retry} title={state.message ?? (state.yaca_present ? "Il vecchio plugin YaCA usa la stessa porta: disabilitalo in Tools > Options > Addons" : "Chiudi e riapri TeamSpeak per caricare il plugin aggiornato")}
+        : <button onClick={retry} title={state.message ?? "Apri la guida per sistemare l'addon vocale"}
             className="text-display text-[13px] cursor-pointer hover:opacity-70 transition-opacity" style={{ color: state.status === "checking" || state.status === "none" ? INK.soft : INK.red, transform: "rotate(-5deg)" }}>{text}</button>
       }
     </div>
