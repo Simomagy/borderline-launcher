@@ -8,6 +8,7 @@ use tauri::{
 };
 
 mod heartbeat;
+mod voice_plugin;
 use heartbeat::HeartbeatHandle;
 
 #[cfg(target_os = "windows")]
@@ -785,6 +786,7 @@ pub fn run() {
             get_heartbeat_counts,
             get_heartbeat_status,
             update_discord_presence,
+            voice_plugin::ensure_voice_plugin,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

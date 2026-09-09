@@ -23,11 +23,10 @@ interface BanInfo {
 }
 type ServerStatus  = "loading" | "online" | "offline";
 type AccessStatus  = "loading" | "allowed" | "not_allowlisted" | "banned" | "error" | "unknown";
+type VoicePlugin   = { status: "checking" | "ok" | "installed" | "restart_needed" | "none" | "error"; version?: string; message?: string; yaca_present?: boolean };
 
 const win = () => getCurrentWindow();
 
-// Addon vocale YACA (backend TeamSpeak) per Borderline
-const YACA_ADDON_URL = "https://yaca.systems/download/boderlinedev";
 // Server TeamSpeak del territorio — mostrato sotto la checklist, copiabile.
 const TS3_ADDRESS = "ts3dev.borderlinerp.com";
 
@@ -151,6 +150,11 @@ export default function App() {
   const [steamRunning,   setSteamRunning]   = useState(false);
   const [redmRunning,    setRedmRunning]    = useState(false);
   const [teamspeakRunning, setTeamspeakRunning] = useState(false);
+  const [voicePlugin, setVoicePlugin] = useState<VoicePlugin>({ status: "checking" });
+  const checkVoicePlugin = useCallback(async () => {
+    try { setVoicePlugin(await invoke<VoicePlugin>("ensure_voice_plugin")); }
+    catch (e) { setVoicePlugin({ status: "error", message: String(e) }); }
+  }, []);
   const [initializing, setInitializing] = useState(true);
   const [initLabel, setInitLabel]       = useState("Verifica applicazioni");
   const initDone = useRef(false);
@@ -316,6 +320,10 @@ export default function App() {
     const startup = async () => {
       setInitLabel("Verifica applicazioni");
       const { discord, steam, teamspeak } = await checkProcesses();
+      // Plugin vocale prima di avviare TeamSpeak: a TS3 chiuso si installa subito.
+      setInitLabel("Aggiornamento plugin vocale");
+      await checkVoicePlugin();
+      setInitLabel("Verifica applicazioni");
       // TeamSpeak è opzionale (non blocca l'init): fire-and-forget se non gira.
       if (!teamspeak) { invoke("launch_teamspeak").catch(() => {}); }
       if (discord && steam) { initDone.current = true; await finish(); return; }
@@ -362,7 +370,7 @@ export default function App() {
     const a = setInterval(() => recheckAccess(steamHex), 30_000);
     const d = setInterval(updatePresence, 30_000);
     const c = setInterval(checkHeartbeat, 3_000);
-    const u = setInterval(checkForUpdates, 15 * 60_000); // check updater ogni 15 min
+    const u = setInterval(() => { checkForUpdates(); checkVoicePlugin(); }, 15 * 60_000); // check updater + plugin vocale ogni 15 min
     let unlisten: (() => void) | undefined;
     listen("tauri://focus", () => recheckAccess(steamHex)).then(f => { unlisten = f; });
     return () => { clearInterval(h); clearInterval(p); clearInterval(a); clearInterval(d); clearInterval(c); clearInterval(u); unlisten?.(); };
@@ -517,13 +525,14 @@ export default function App() {
                   }
                 </div>
               ))}
+              <VoicePluginRow state={voicePlugin} retry={checkVoicePlugin} />
               <Ts3Copy />
             </div>
 
-            {/* pulsante addon vocale — sempre raggiungibile */}
+            {/* addon vocale: forza il controllo/installazione di Borderline Voice (vedi ensure_voice_plugin) */}
             <button
-              onClick={() => openUrl(YACA_ADDON_URL)}
-              title="Scarica l'addon vocale YACA"
+              onClick={checkVoicePlugin}
+              title="Controlla e installa l'addon vocale Borderline Voice in TeamSpeak"
               className="group mt-3 w-full flex items-center justify-center gap-2 py-2 cursor-pointer transition-all hover:-translate-y-px active:translate-y-0"
               style={{ background: INK.red, color: "#f3e2bd", boxShadow: "0 3px 0 rgba(60,18,8,.55)" }}
             >
@@ -988,6 +997,29 @@ function HexCopy({ hex }: { hex: string }) {
 }
 
 // ── Ts3Copy — indirizzo del server vocale, un tocco per copiarlo ────────────
+
+/** Riga "Plugin vocale" nella checklist: stato dell'auto-update di Borderline Voice. */
+function VoicePluginRow({ state, retry }: { state: VoicePlugin; retry: () => void }) {
+  const good = state.status === "ok" || state.status === "installed";
+  const text =
+    state.status === "checking"       ? "…" :
+    state.status === "none"           ? "– non pubblicato" :
+    state.yaca_present && good        ? "✗ disabilita YaCA in TS3" :
+    state.status === "restart_needed" ? "✗ riavvia TeamSpeak" :
+    state.status === "error"          ? "✗ non aggiornato" :
+    `✓ v${state.version}`;
+  const ok = good && !state.yaca_present;
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-serif-sc text-[12px] tracking-wide" style={{ color: INK.text }}>Plugin vocale</span>
+      {ok
+        ? <span className="text-display text-[13px]" style={{ color: INK.green, transform: "rotate(-5deg)", display: "inline-block" }}>{text}</span>
+        : <button onClick={retry} title={state.message ?? (state.yaca_present ? "Il vecchio plugin YaCA usa la stessa porta: disabilitalo in Tools > Options > Addons" : "Chiudi e riapri TeamSpeak per caricare il plugin aggiornato")}
+            className="text-display text-[13px] cursor-pointer hover:opacity-70 transition-opacity" style={{ color: state.status === "checking" || state.status === "none" ? INK.soft : INK.red, transform: "rotate(-5deg)" }}>{text}</button>
+      }
+    </div>
+  );
+}
 
 function Ts3Copy() {
   const [copied, setCopied] = useState(false);

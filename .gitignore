@@ -35,3 +35,6 @@ anticheat/allowlist.json.sig
 *.njsproj
 *.sln
 *.sw?
+
+# strumenti di release interni (GUI, publish addon): mai su GitHub
+release/
