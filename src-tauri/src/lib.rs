@@ -34,7 +34,7 @@ pub(crate) const USER_AGENT: &str = concat!("BorderlineLauncher/", env!("CARGO_P
 //   (giocatori in-game + launcher aperti).
 const RPC_STATE_TEMPLATE: &str = "In gioco — %players giocatori";
 const RPC_LARGE_IMAGE: &str = "logo";
-const RPC_LARGE_TEXT: &str = "Borderline";
+const RPC_LARGE_TEXT: &str = "Borderline RP";
 const RPC_BUTTONS: [(&str, &str); 2] = [
     ("Sito Web", "https://borderlinerp.com"),
     ("Server Discord", "https://ds.borderlinerp.com"),

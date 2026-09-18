@@ -42,7 +42,7 @@ export function VoiceGuideModal({
   if (conflicts.length > 0 || state.status === "conflict") {
     steps.push({
       title: `Disinstalla ${conflicts.join(" e ") || "il plugin in conflitto"} da TeamSpeak`,
-      hint: "In TeamSpeak: Tools › Options › Addons (Strumenti › Opzioni › Addon), seleziona il plugin e premi Uninstall. Serve TeamSpeak aperto.",
+      hint: "In TeamSpeak: Tools › Options › Addons (Tools › Options › Addons), seleziona il plugin e premi Uninstall.",
       done: conflicts.length === 0,
       action: !tsRunning && conflicts.length > 0 ? { label: "Apri TeamSpeak", run: onLaunchTeamspeak } : undefined,
     });
