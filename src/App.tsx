@@ -549,9 +549,6 @@ export default function App() {
               <Download size={13} className="group-hover:translate-y-px transition-transform" />
               <span className="text-display text-[13px] uppercase tracking-[.1em]">Addon vocale</span>
             </button>
-
-            {/* manutenzione RedM: pulizia cache e fix Vulkan, solo su richiesta del giocatore */}
-            <CacheButtons redmRunning={redmRunning} />
           </Poster>
         </div>
 
@@ -683,6 +680,11 @@ export default function App() {
             onConfirm={() => { setShowExileModal(false); startGame(); }}
           />
         )}
+
+        {/* ══ MANUTENZIONE REDM — appena sopra il bancone, al centro ══ */}
+        <div className="absolute bottom-[68px] left-1/2 -translate-x-1/2 z-20">
+          <CacheButtons redmRunning={redmRunning} />
+        </div>
 
         {/* ══ BOTTOM BAR — bancone del saloon ══ */}
         <div
@@ -1024,25 +1026,23 @@ function HexCopy({ hex }: { hex: string }) {
 
 /** Riga "Plugin vocale" nella checklist: stato dell'auto-update di Borderline Voice. */
 function VoicePluginRow({ state, retry }: { state: VoicePlugin; retry: () => void }) {
+  // Se Borderline Voice gira, sta a posto: la presenza su disco di YaCA/SaltyChat non si
+  // commenta, visto che non possiamo sapere se sono disattivati (sembrerebbe un errore nostro).
   const good = state.status === "ok" || state.status === "installed";
-  // Plugin nostro a posto ma YaCA/SaltyChat ancora installati: non blocchiamo (possono essere
-  // gia' disattivati, e non sempre riusciamo a verificarlo), ma lo diciamo al giocatore.
-  const warn = good && (state.conflicts ?? []).length > 0;
   const text =
     state.status === "checking"       ? "…" :
     state.status === "none"           ? "– non pubblicato" :
     state.status === "conflict"       ? `✗ ${(state.conflicts ?? []).join("/") || "plugin"} in conflitto` :
     state.status === "restart_needed" ? "✗ riavvia TeamSpeak" :
     state.status === "error"          ? "✗ non aggiornato" :
-    warn                              ? `⚠ disattiva ${(state.conflicts ?? []).join("/")}` :
     `✓ v${state.version}`;
   return (
     <div className="flex items-center justify-between">
       <span className="text-serif-sc text-[12px] tracking-wide" style={{ color: INK.text }}>Plugin vocale</span>
-      {good && !warn
+      {good
         ? <span className="text-display text-[13px]" style={{ color: INK.green, transform: "rotate(-5deg)", display: "inline-block" }}>{text}</span>
-        : <button onClick={retry} title={state.message ?? (warn ? "Vanno solo disattivati in TeamSpeak, non disinstallati: apri la guida" : "Apri la guida per sistemare l'addon vocale")}
-            className="text-display text-[13px] cursor-pointer hover:opacity-70 transition-opacity" style={{ color: warn ? INK.head : state.status === "checking" || state.status === "none" ? INK.soft : INK.red, transform: "rotate(-5deg)" }}>{text}</button>
+        : <button onClick={retry} title={state.message ?? "Apri la guida per sistemare l'addon vocale"}
+            className="text-display text-[13px] cursor-pointer hover:opacity-70 transition-opacity" style={{ color: state.status === "checking" || state.status === "none" ? INK.soft : INK.red, transform: "rotate(-5deg)" }}>{text}</button>
       }
     </div>
   );
@@ -1076,16 +1076,18 @@ function CacheButtons({ redmRunning }: { redmRunning: boolean }) {
   };
 
   const label = (mode: "full" | "vulkan", base: string) => (busy ? "…" : armed === mode ? "Confermi?" : base);
-  const btn = "flex-1 py-1 text-display text-[11px] uppercase tracking-[.08em] cursor-pointer transition-opacity hover:opacity-80";
+  const btn = "text-mono text-[8px] uppercase tracking-[.28em] px-3 py-1 cursor-pointer transition-colors";
+  const tone = (mode: "full" | "vulkan") => (armed === mode ? "text-gold-300" : "text-bone-200/45 hover:text-gold-300");
   return (
-    <div className="mt-2 flex flex-col gap-1">
-      <div className="flex gap-1.5">
+    <div className="flex flex-col items-center gap-0.5">
+      <div className="flex items-center">
         <button onClick={() => run("full")} disabled={busy} title="Cancella cache, nui-storage, server-cache e server-cache-priv di RedM"
-          className={btn} style={{ color: INK.head, border: `1px solid ${INK.rule}` }}>{label("full", "Pulisci cache")}</button>
-        <button onClick={() => run("vulkan")} disabled={busy} title="Cancella solo i file hints_* : fix dell'errore Vulkan all'avvio"
-          className={btn} style={{ color: INK.head, border: `1px solid ${INK.rule}` }}>{label("vulkan", "Fix Vulkan")}</button>
+          className={`${btn} ${tone("full")}`}>{label("full", "Pulisci cache")}</button>
+        <span className="w-px h-3 bg-gold-600/25" />
+        <button onClick={() => run("vulkan")} disabled={busy} title="Cancella solo i file hints_* di RedM: fix dell'errore Vulkan all'avvio"
+          className={`${btn} ${tone("vulkan")}`}>{label("vulkan", "Fix Vulkan")}</button>
       </div>
-      {result && <span className="text-serif-sc text-[10px] leading-snug text-center" style={{ color: INK.soft }}>{result}</span>}
+      {result && <span className="text-mono text-[8px] uppercase tracking-wider text-bone-200/60">{result}</span>}
     </div>
   );
 }

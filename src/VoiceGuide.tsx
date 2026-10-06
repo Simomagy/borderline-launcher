@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { Poster, PaperHeader, PaperRule, INK } from "./western";
 
 /** Stato dell'addon vocale come lo ritorna il comando Rust `ensure_voice_plugin`. */
@@ -15,18 +15,6 @@ export type VoicePlugin = {
 /** Stati che bloccano il tasto Gioca finché la guida non è completata. */
 export const voiceBlocked = (s: VoicePlugin["status"]) => s === "conflict" || s === "restart_needed" || s === "error";
 
-/**
- * YaCA usa la nostra stessa porta (30125): se Borderline Voice è partito, YaCA non sta
- * dando fastidio, e il log di TeamSpeak ce lo dice. Per gli altri (SaltyChat) non esiste
- * una prova dall'esterno: lo diciamo al giocatore e gli chiediamo conferma, una volta sola.
- */
-const verifiable = (name: string) => name === "YaCA";
-
-const ACK_KEY = "blv_ack_disabled";
-const readAck = (): string[] => {
-  try { return JSON.parse(localStorage.getItem(ACK_KEY) ?? "[]"); } catch { return []; }
-};
-
 type Step = { title: string; hint?: string; done: boolean; action?: { label: string; run: () => void } };
 
 /**
@@ -35,6 +23,9 @@ type Step = { title: string; hint?: string; done: boolean; action?: { label: str
  *   - conflict:       disattiva YaCA/SaltyChat → riavvia TS3 → verifica dal log di TeamSpeak
  *   - restart_needed: chiudi TS3 → (installazione automatica) → riapri TS3
  *   - error:          messaggio + riprova
+ *
+ * Lo stato "disattivato" di un plugin altrui non è leggibile dall'esterno: il passo si
+ * spunta quando Borderline Voice riesce finalmente a partire, che è la cosa che conta.
  */
 export function VoiceGuideModal({
   state, teamspeakRunning, onRecheck, onLaunchTeamspeak, onClose,
@@ -48,36 +39,20 @@ export function VoiceGuideModal({
     return () => clearInterval(t);
   }, [onRecheck]);
 
-  const [ack, setAck] = useState<string[]>(readAck);
-  const ackAdd = (name: string) => setAck(prev => {
-    const next = Array.from(new Set([...prev, name]));
-    try { localStorage.setItem(ACK_KEY, JSON.stringify(next)); } catch { /* storage pieno o bloccato */ }
-    return next;
-  });
-
   const tsRunning = state.teamspeak_running ?? teamspeakRunning;
   const conflicts = state.conflicts ?? [];
   const pluginActive = state.plugin_active ?? null;
   const installed = state.status === "ok" || state.status === "installed";
 
   const steps: Step[] = [];
-  for (const c of conflicts) {
-    const done = verifiable(c) ? pluginActive === true : ack.includes(c);
+  if (pluginActive === false) {
     steps.push({
-      title: `Disattiva ${c} in TeamSpeak`,
-      hint: "Tools › Options › Addons: porta l'interruttore del plugin su Disabled. Non premere Uninstall, perderesti impostazioni e licenza. "
-        + (verifiable(c) ? "Al riavvio di TeamSpeak lo verifico io." : "Questo non posso verificarlo: confermami tu quando è fatto."),
-      done,
-      action: done ? undefined
-        : verifiable(c) ? (tsRunning ? undefined : { label: "Apri TeamSpeak", run: onLaunchTeamspeak })
-        : { label: "Fatto, l'ho disattivato", run: () => ackAdd(c) },
-    });
-  }
-  if (pluginActive === false && conflicts.length === 0) {
-    steps.push({
-      title: "Un altro plugin vocale occupa la porta 30125",
-      hint: "In TeamSpeak: Tools › Options › Addons, disattiva gli altri plugin vocali (Disabled, non Uninstall) e riavvia TeamSpeak.",
+      title: conflicts.length > 0
+        ? `Disattiva ${conflicts.join(" e ")} in TeamSpeak`
+        : "Disattiva gli altri plugin vocali in TeamSpeak",
+      hint: "Tools › Options › Addons: porta l'interruttore del plugin su Disabled. Non premere Uninstall, perderesti impostazioni e licenza.",
       done: false,
+      action: tsRunning ? undefined : { label: "Apri TeamSpeak", run: onLaunchTeamspeak },
     });
   }
   steps.push({
