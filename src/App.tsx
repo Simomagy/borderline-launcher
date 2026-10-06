@@ -4,7 +4,7 @@ import { PlayButton } from "./PlayButton";
 import LivingBackground from "./LivingBackground";
 import { Poster, PaperHeader, PaperRule, Star, InkStamp, INK, PAPER_NOISE } from "./western";
 import { VoiceGuideModal, voiceBlocked, type VoicePlugin } from "./VoiceGuide";
-import { Copy, Check, Download } from "lucide-react";
+import { Copy, Check, Download, Trash2, Wrench } from "lucide-react";
 import { motion } from "motion/react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -1076,18 +1076,26 @@ function CacheButtons({ redmRunning }: { redmRunning: boolean }) {
   };
 
   const label = (mode: "full" | "vulkan", base: string) => (busy ? "…" : armed === mode ? "Confermi?" : base);
-  const btn = "text-mono text-[8px] uppercase tracking-[.28em] px-3 py-1 cursor-pointer transition-colors";
-  const tone = (mode: "full" | "vulkan") => (armed === mode ? "text-gold-300" : "text-bone-200/45 hover:text-gold-300");
+  const btn = "flex items-center gap-1.5 px-3.5 py-1.5 text-display text-[13px] uppercase tracking-[.1em] cursor-pointer transition-all hover:-translate-y-px active:translate-y-0";
+  const style = (mode: "full" | "vulkan") => ({
+    color: armed === mode ? "#f6e6c4" : "#e9c590",
+    background: armed === mode ? "rgba(138,48,24,.88)" : "rgba(22,14,9,.78)",
+    border: `1px solid ${armed === mode ? "rgba(246,230,196,.5)" : "rgba(230,164,92,.45)"}`,
+    boxShadow: "0 2px 0 rgba(0,0,0,.55)",
+  });
   return (
-    <div className="flex flex-col items-center gap-0.5">
-      <div className="flex items-center">
-        <button onClick={() => run("full")} disabled={busy} title="Cancella cache, nui-storage, server-cache e server-cache-priv di RedM"
-          className={`${btn} ${tone("full")}`}>{label("full", "Pulisci cache")}</button>
-        <span className="w-px h-3 bg-gold-600/25" />
-        <button onClick={() => run("vulkan")} disabled={busy} title="Cancella solo i file hints_* di RedM: fix dell'errore Vulkan all'avvio"
-          className={`${btn} ${tone("vulkan")}`}>{label("vulkan", "Fix Vulkan")}</button>
+    <div className="flex flex-col items-center gap-1.5">
+      <div className="flex items-center gap-2">
+        <button onClick={() => run("full")} disabled={busy} style={style("full")} className={btn}
+          title="Cancella cache, nui-storage, server-cache e server-cache-priv di RedM">
+          <Trash2 size={12} />{label("full", "Pulisci cache")}
+        </button>
+        <button onClick={() => run("vulkan")} disabled={busy} style={style("vulkan")} className={btn}
+          title="Cancella solo i file hints_* di RedM: fix dell'errore Vulkan all'avvio">
+          <Wrench size={12} />{label("vulkan", "Fix Vulkan")}
+        </button>
       </div>
-      {result && <span className="text-mono text-[8px] uppercase tracking-wider text-bone-200/60">{result}</span>}
+      {result && <span className="text-mono text-[9px] uppercase tracking-wider text-gold-200/75">{result}</span>}
     </div>
   );
 }
