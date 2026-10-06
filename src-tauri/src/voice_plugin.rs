@@ -66,8 +66,11 @@ fn log_state() -> (Option<bool>, Option<Vec<String>>) {
     }
     let Some(path) = newest_ts3_log() else { return (None, None) };
     let Ok(bytes) = std::fs::read(path) else { return (None, None) };
-    let text = String::from_utf8_lossy(&bytes);
+    parse_log(&String::from_utf8_lossy(&bytes))
+}
 
+/// Parte pura di `log_state`: vince sempre la riga piu' recente di ciascun tipo.
+fn parse_log(text: &str) -> (Option<bool>, Option<Vec<String>>) {
     let (mut active, mut conflicts) = (None, None);
     for line in text.lines().rev() {
         if !line.contains("BorderlineVoice") {
@@ -191,4 +194,35 @@ async fn ensure() -> Result<Value, String> {
     }
     std::fs::rename(&staged, &dll).map_err(io)?;
     Ok(json!({ "status": "installed", "version": version }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_log;
+
+    /// Righe vere del client TS3 (canale BorderlineVoice). Conta l'ultima di ogni tipo.
+    #[test]
+    fn reads_plugin_state_from_log() {
+        let log = "\
+2026-10-06 16:25:13.741762|INFO    |BorderlineVoice|   |listening on ws://127.0.0.1:30125, version 1.0.2
+2026-10-06 16:25:18.760727|INFO    |BorderlineVoice|   |conflicting plugins loaded: SaltyChat
+2026-10-06 16:25:19.000000|INFO    |ClientUI      |1  |Connect status: Connection established
+";
+        assert_eq!(parse_log(log), (Some(true), Some(vec!["SaltyChat".to_string()])));
+
+        let cleared = format!("{log}2026-10-06 16:30:00.000000|INFO    |BorderlineVoice|   |conflicting plugins loaded: none\n");
+        assert_eq!(parse_log(&cleared), (Some(true), Some(Vec::new())));
+
+        let busy = "\
+2026-10-06 16:25:13.000000|INFO    |BorderlineVoice|   |cannot bind 127.0.0.1:30125 (another YaCA-compatible plugin loaded?)
+2026-10-06 16:25:18.000000|INFO    |BorderlineVoice|   |conflicting plugins loaded: YaCA, SaltyChat
+";
+        assert_eq!(
+            parse_log(busy),
+            (Some(false), Some(vec!["YaCA".to_string(), "SaltyChat".to_string()]))
+        );
+
+        // Plugin vecchio o TS3 appena avviato: nessuna riga nostra, nessuna pretesa.
+        assert_eq!(parse_log("2026-10-06 16:25:13.000000|INFO    |Plugins       |   |Loading plugin: x.dll\n"), (None, None));
+    }
 }
