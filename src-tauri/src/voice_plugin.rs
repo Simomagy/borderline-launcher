@@ -49,62 +49,83 @@ fn newest_ts3_log() -> Option<PathBuf> {
         .map(|e| e.path())
 }
 
-const CONFLICT_TAG: &str = "conflicting plugins loaded:";
+/// Plugin vocali incompatibili col nostro: chiave `info=` dell'addon in TeamSpeak e nome
+/// da mostrare al giocatore. Vanno **disattivati**, mai disinstallati.
+const CONFLICTING: [(&str, &str); 2] = [("yaca", "YaCA"), ("SaltyChat", "SaltyChat")];
 
-/// Cosa dice di se' il plugin nel log del client TeamSpeak:
-///   - `.0` Borderline Voice e' partito: `listening on ws://...` = si', `cannot bind` = no,
-///     gli ha preso la porta un altro plugin vocale.
-///   - `.1` altri plugin vocali **davvero attivi**: il plugin li vede dall'interno del processo
-///     (TS3 scarica dalla memoria quelli disattivati), quindi questa lista distingue
-///     "installato" da "attivo", cosa che il file su disco non puo' dire.
+/// Plugin vocali davvero **abilitati**, letti dal database di TeamSpeak (tabella `Addons`).
 ///
-/// `None` = TS3 chiuso, log muto o plugin troppo vecchio per scriverlo: in quel caso il
-/// launcher non dichiara nessun conflitto, invece di tirare a indovinare.
-fn log_state() -> (Option<bool>, Option<Vec<String>>) {
-    if !teamspeak_running() {
-        return (None, None);
+/// E' l'unica fonte attendibile. Non lo dice il file su disco (puo' essere li' e disattivato) e
+/// nemmeno la lista dei moduli caricati nel processo: TeamSpeak carica la DLL di ogni plugin
+/// anche quando e' disabilitato (verificato il 6/10/2026: SaltyChat con `enabled=false` risultava
+/// comunque fra i moduli di ts3client). Nelle righe della tabella, un addon abilitato
+/// semplicemente non ha la chiave `enabled`.
+///
+/// `None` = database illeggibile: nessuna pretesa, il launcher non dichiara conflitti.
+fn enabled_conflicts() -> Option<Vec<String>> {
+    let db = std::env::var_os("APPDATA").map(|p| PathBuf::from(p).join(r"TS3Client\settings.db"))?;
+    // Copia: TeamSpeak tiene il file aperto, noi leggiamo uno scatto senza disturbarlo.
+    let snapshot = std::env::temp_dir().join("borderline_ts3_settings.db");
+    std::fs::copy(&db, &snapshot).ok()?;
+    let conn = rusqlite::Connection::open_with_flags(&snapshot, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
+    let mut stmt = conn.prepare("SELECT value FROM Addons").ok()?;
+    let rows: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, Vec<u8>>(0))
+        .ok()?
+        .flatten()
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .collect();
+    Some(conflicts_in_rows(&rows))
+}
+
+/// Parte pura di `enabled_conflicts`.
+fn conflicts_in_rows(rows: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for row in rows {
+        if !row.lines().any(|l| l.trim() == "type=PLUGIN") || row.lines().any(|l| l.trim() == "enabled=false") {
+            continue;
+        }
+        for (info, name) in CONFLICTING {
+            if row.lines().any(|l| l.trim() == format!("info={info}")) && !out.iter().any(|n| n == name) {
+                out.push(name.to_string());
+            }
+        }
     }
-    let Some(path) = newest_ts3_log() else { return (None, None) };
-    let Ok(bytes) = std::fs::read(path) else { return (None, None) };
+    out
+}
+
+/// Borderline Voice e' partito in TeamSpeak? Lo dice il plugin stesso nel log del client:
+/// `listening on ws://...` = si', `cannot bind` = un altro plugin vocale gli ha preso la porta.
+/// `None` = TS3 chiuso o log muto.
+fn plugin_active() -> Option<bool> {
+    if !teamspeak_running() {
+        return None;
+    }
+    let bytes = std::fs::read(newest_ts3_log()?).ok()?;
     parse_log(&String::from_utf8_lossy(&bytes))
 }
 
-/// Parte pura di `log_state`: vince sempre la riga piu' recente di ciascun tipo.
-fn parse_log(text: &str) -> (Option<bool>, Option<Vec<String>>) {
-    let (mut active, mut conflicts) = (None, None);
+/// Parte pura di `plugin_active`: vince la riga piu' recente.
+fn parse_log(text: &str) -> Option<bool> {
     for line in text.lines().rev() {
         if !line.contains("BorderlineVoice") {
             continue;
         }
-        if conflicts.is_none() {
-            if let Some(i) = line.find(CONFLICT_TAG) {
-                let list = line[i + CONFLICT_TAG.len()..].trim();
-                conflicts = Some(if list == "none" {
-                    Vec::new()
-                } else {
-                    list.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
-                });
-            }
+        if line.contains("listening on ws") {
+            return Some(true);
         }
-        if active.is_none() {
-            if line.contains("listening on ws") {
-                active = Some(true);
-            } else if line.contains("cannot bind") {
-                active = Some(false);
-            }
-        }
-        if active.is_some() && conflicts.is_some() {
-            break;
+        if line.contains("cannot bind") {
+            return Some(false);
         }
     }
-    (active, conflicts)
+    None
 }
 
 /// Stato ritornato al frontend:
 /// `ok` gia' aggiornato, `installed` appena installato, `restart_needed` scaricato ma TS3
 /// e' aperto, `conflict` il plugin non e' partito perche' un altro gli ha preso la porta,
 /// `none` il manifest non ha `voice_plugin`, `error` con `message`.
-/// Sempre presenti: `conflicts` (plugin da disattivare trovati sul disco), `plugin_active`
+/// Sempre presenti: `conflicts` (plugin vocali abilitati in TeamSpeak), `plugin_active`
 /// (true/false/null) e `teamspeak_running`, cosi' la guida nel launcher verifica ogni passo
 /// senza altre chiamate.
 #[tauri::command]
@@ -113,11 +134,11 @@ pub async fn ensure_voice_plugin() -> Value {
         Ok(v) => v,
         Err(e) => json!({ "status": "error", "message": e }),
     };
-    let (active, reported) = log_state();
-    let conflicts = reported.unwrap_or_default();
-    // Blocchiamo solo su prove: il nostro plugin non e' partito, oppure un altro plugin vocale
-    // risulta caricato in TeamSpeak adesso. La sola presenza della DLL su disco non conta:
-    // puo' essere gia' disattivata, e segnalarla sembrerebbe un errore nostro.
+    let active = plugin_active();
+    let conflicts = enabled_conflicts().unwrap_or_default();
+    // Blocchiamo solo su prove: il nostro plugin non e' partito, oppure TeamSpeak ha un altro
+    // plugin vocale abilitato. La DLL ferma su disco, o caricata ma disattivata, non conta:
+    // segnalarla sembrerebbe un errore nostro.
     if (active == Some(false) || !conflicts.is_empty()) && v["status"] != "error" {
         v["status"] = json!("conflict");
     }
@@ -198,31 +219,66 @@ async fn ensure() -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_log;
+    use super::{conflicts_in_rows, parse_log};
 
-    /// Righe vere del client TS3 (canale BorderlineVoice). Conta l'ultima di ogni tipo.
+    /// Righe vere del client TS3 (canale BorderlineVoice): conta l'ultima.
     #[test]
     fn reads_plugin_state_from_log() {
-        let log = "\
-2026-10-06 16:25:13.741762|INFO    |BorderlineVoice|   |listening on ws://127.0.0.1:30125, version 1.0.2
-2026-10-06 16:25:18.760727|INFO    |BorderlineVoice|   |conflicting plugins loaded: SaltyChat
-2026-10-06 16:25:19.000000|INFO    |ClientUI      |1  |Connect status: Connection established
+        let ok = "2026-10-06 16:25:13.741762|INFO    |BorderlineVoice|   |listening on ws://127.0.0.1:30125, version 1.0.3
 ";
-        assert_eq!(parse_log(log), (Some(true), Some(vec!["SaltyChat".to_string()])));
+        assert_eq!(parse_log(ok), Some(true));
 
-        let cleared = format!("{log}2026-10-06 16:30:00.000000|INFO    |BorderlineVoice|   |conflicting plugins loaded: none\n");
-        assert_eq!(parse_log(&cleared), (Some(true), Some(Vec::new())));
+        let busy = format!("{ok}2026-10-06 16:30:00.000000|INFO    |BorderlineVoice|   |cannot bind 127.0.0.1:30125 (another YaCA-compatible plugin loaded?)
+");
+        assert_eq!(parse_log(&busy), Some(false));
 
-        let busy = "\
-2026-10-06 16:25:13.000000|INFO    |BorderlineVoice|   |cannot bind 127.0.0.1:30125 (another YaCA-compatible plugin loaded?)
-2026-10-06 16:25:18.000000|INFO    |BorderlineVoice|   |conflicting plugins loaded: YaCA, SaltyChat
-";
-        assert_eq!(
-            parse_log(busy),
-            (Some(false), Some(vec!["YaCA".to_string(), "SaltyChat".to_string()]))
-        );
+        assert_eq!(parse_log("2026-10-06 16:25:13.000000|INFO    |Plugins       |   |Loading plugin: x.dll
+"), None);
+    }
 
-        // Plugin vecchio o TS3 appena avviato: nessuna riga nostra, nessuna pretesa.
-        assert_eq!(parse_log("2026-10-06 16:25:13.000000|INFO    |Plugins       |   |Loading plugin: x.dll\n"), (None, None));
+    /// Controllo manuale sulla macchina corrente: legge davvero settings.db di TeamSpeak.
+    /// `cargo test live_addons -- --ignored --nocapture`
+    #[test]
+    #[ignore = "dipende dal TeamSpeak installato su questa macchina"]
+    fn live_addons() {
+        println!("plugin vocali abilitati: {:?}", super::enabled_conflicts());
+        assert!(super::enabled_conflicts().is_some(), "settings.db illeggibile");
+    }
+
+    /// Righe vere della tabella Addons di settings.db: un addon abilitato non ha la chiave `enabled`.
+    #[test]
+    fn reads_enabled_plugins_from_addons_rows() {
+        let salty_off = "type=PLUGIN
+author=saltyhub.net
+version=4.1.0
+info=SaltyChat
+uninstall_capable=true
+name=Salty Chat
+enabled=false";
+        let salty_on = salty_off.replace("
+enabled=false", "");
+        let yaca_off = "uninstall_capable=true
+enabled=false
+type=PLUGIN
+name=Yet-Another-Communication-Addon
+info=yaca";
+        let soundboard = "uninstall_capable=true
+type=PLUGIN
+info=rp_soundboard
+name=RP Soundboard";
+        let iconpack = "uninstall_capable=true
+type=ICONPACK
+info=SaltyChat
+name=finto";
+
+        let rows = [salty_off.to_string(), yaca_off.to_string(), soundboard.to_string(), iconpack.to_string()];
+        assert_eq!(conflicts_in_rows(&rows), Vec::<String>::new());
+
+        let rows = [salty_on.clone(), yaca_off.to_string(), soundboard.to_string()];
+        assert_eq!(conflicts_in_rows(&rows), vec!["SaltyChat".to_string()]);
+
+        let rows = [salty_on, yaca_off.replace("
+enabled=false", "")];
+        assert_eq!(conflicts_in_rows(&rows), vec!["SaltyChat".to_string(), "YaCA".to_string()]);
     }
 }
