@@ -1059,6 +1059,14 @@ function CacheButtons({ redmRunning }: { redmRunning: boolean }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
 
+  // L'esito è una notifica, non uno stato: sparisce da solo dopo 10 s.
+  // (`run` azzera `result` prima di ogni esecuzione, così il timer riparte anche a esito uguale.)
+  useEffect(() => {
+    if (!result) return;
+    const t = setTimeout(() => setResult(null), 10_000);
+    return () => clearTimeout(t);
+  }, [result]);
+
   const run = async (mode: "full" | "vulkan") => {
     if (redmRunning) { setResult("Chiudi RedM prima di pulire la cache."); return; }
     if (armed !== mode) { setArmed(mode); setResult(null); setTimeout(() => setArmed(a => (a === mode ? null : a)), 5000); return; }
