@@ -8,6 +8,7 @@ use tauri::{
 };
 
 mod heartbeat;
+mod redm_cache;
 mod voice_plugin;
 use heartbeat::HeartbeatHandle;
 
@@ -787,6 +788,7 @@ pub fn run() {
             get_heartbeat_status,
             update_discord_presence,
             voice_plugin::ensure_voice_plugin,
+            redm_cache::clear_redm_cache,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

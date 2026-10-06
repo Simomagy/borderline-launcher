@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Poster, PaperHeader, PaperRule, INK } from "./western";
 
 /** Stato dell'addon vocale come lo ritorna il comando Rust `ensure_voice_plugin`. */
@@ -7,18 +7,32 @@ export type VoicePlugin = {
   version?: string;
   message?: string;
   conflicts?: string[];
+  /** true = Borderline Voice è partito in TS3, false = un altro plugin ha la porta, null = non verificabile. */
+  plugin_active?: boolean | null;
   teamspeak_running?: boolean;
 };
 
 /** Stati che bloccano il tasto Gioca finché la guida non è completata. */
 export const voiceBlocked = (s: VoicePlugin["status"]) => s === "conflict" || s === "restart_needed" || s === "error";
 
+/**
+ * YaCA usa la nostra stessa porta (30125): se Borderline Voice è partito, YaCA non sta
+ * dando fastidio, e il log di TeamSpeak ce lo dice. Per gli altri (SaltyChat) non esiste
+ * una prova dall'esterno: lo diciamo al giocatore e gli chiediamo conferma, una volta sola.
+ */
+const verifiable = (name: string) => name === "YaCA";
+
+const ACK_KEY = "blv_ack_disabled";
+const readAck = (): string[] => {
+  try { return JSON.parse(localStorage.getItem(ACK_KEY) ?? "[]"); } catch { return []; }
+};
+
 type Step = { title: string; hint?: string; done: boolean; action?: { label: string; run: () => void } };
 
 /**
  * Guida passo-passo per sistemare l'addon vocale. Ogni passo è verificato dal
  * launcher: la guida ripete il controllo ogni 2 s e spunta da sola i passi fatti.
- *   - conflict:       disinstalla YaCA/SaltyChat → chiudi TS3 → (installazione automatica) → riapri TS3
+ *   - conflict:       disattiva YaCA/SaltyChat → riavvia TS3 → verifica dal log di TeamSpeak
  *   - restart_needed: chiudi TS3 → (installazione automatica) → riapri TS3
  *   - error:          messaggio + riprova
  */
@@ -34,23 +48,42 @@ export function VoiceGuideModal({
     return () => clearInterval(t);
   }, [onRecheck]);
 
+  const [ack, setAck] = useState<string[]>(readAck);
+  const ackAdd = (name: string) => setAck(prev => {
+    const next = Array.from(new Set([...prev, name]));
+    try { localStorage.setItem(ACK_KEY, JSON.stringify(next)); } catch { /* storage pieno o bloccato */ }
+    return next;
+  });
+
   const tsRunning = state.teamspeak_running ?? teamspeakRunning;
   const conflicts = state.conflicts ?? [];
+  const pluginActive = state.plugin_active ?? null;
   const installed = state.status === "ok" || state.status === "installed";
 
   const steps: Step[] = [];
-  if (conflicts.length > 0 || state.status === "conflict") {
+  for (const c of conflicts) {
+    const done = verifiable(c) ? pluginActive === true : ack.includes(c);
     steps.push({
-      title: `Disinstalla ${conflicts.join(" e ") || "il plugin in conflitto"} da TeamSpeak`,
-      hint: "In TeamSpeak: Tools › Options › Addons (Tools › Options › Addons), seleziona il plugin e premi Uninstall.",
-      done: conflicts.length === 0,
-      action: !tsRunning && conflicts.length > 0 ? { label: "Apri TeamSpeak", run: onLaunchTeamspeak } : undefined,
+      title: `Disattiva ${c} in TeamSpeak`,
+      hint: "Tools › Options › Addons: porta l'interruttore del plugin su Disabled. Non premere Uninstall, perderesti impostazioni e licenza. "
+        + (verifiable(c) ? "Al riavvio di TeamSpeak lo verifico io." : "Questo non posso verificarlo: confermami tu quando è fatto."),
+      done,
+      action: done ? undefined
+        : verifiable(c) ? (tsRunning ? undefined : { label: "Apri TeamSpeak", run: onLaunchTeamspeak })
+        : { label: "Fatto, l'ho disattivato", run: () => ackAdd(c) },
+    });
+  }
+  if (pluginActive === false && conflicts.length === 0) {
+    steps.push({
+      title: "Un altro plugin vocale occupa la porta 30125",
+      hint: "In TeamSpeak: Tools › Options › Addons, disattiva gli altri plugin vocali (Disabled, non Uninstall) e riavvia TeamSpeak.",
+      done: false,
     });
   }
   steps.push({
     title: "Chiudi TeamSpeak",
     hint: "Chiudilo del tutto, anche dall'icona vicino all'orologio: finché è aperto la DLL del plugin non si può sostituire.",
-    done: installed || !tsRunning,
+    done: !tsRunning || (installed && pluginActive !== false),
   });
   steps.push({
     title: "Installazione di Borderline Voice",
@@ -59,8 +92,8 @@ export function VoiceGuideModal({
   });
   steps.push({
     title: "Riapri TeamSpeak",
-    hint: "Al riavvio TeamSpeak carica il plugin aggiornato.",
-    done: installed && tsRunning,
+    hint: "Al riavvio TeamSpeak carica il plugin aggiornato e io controllo dal log che sia partito.",
+    done: installed && tsRunning && pluginActive !== false,
     action: installed && !tsRunning ? { label: "Apri TeamSpeak", run: onLaunchTeamspeak } : undefined,
   });
 
@@ -84,17 +117,17 @@ export function VoiceGuideModal({
           ) : (
             <ol className="flex flex-col gap-2.5">
               {steps.map((s, i) => {
-                const active = i === current;
-                const color = s.done ? INK.green : active ? INK.text : INK.faint;
+                const isCurrent = i === current;
+                const color = s.done ? INK.green : isCurrent ? INK.text : INK.faint;
                 return (
                   <li key={s.title} className="flex gap-3">
-                    <span className="text-display text-[18px] leading-none w-5 shrink-0" style={{ color: s.done ? INK.green : active ? INK.red : INK.faint }}>
+                    <span className="text-display text-[18px] leading-none w-5 shrink-0" style={{ color: s.done ? INK.green : isCurrent ? INK.red : INK.faint }}>
                       {s.done ? "✓" : i + 1}
                     </span>
                     <div className="flex flex-col gap-0.5 min-w-0">
                       <span className="text-serif-sc text-[13px] tracking-wide" style={{ color, textDecoration: s.done ? "line-through" : "none" }}>{s.title}</span>
-                      {active && s.hint && <span className="text-serif-sc text-[11px] leading-snug" style={{ color: INK.soft }}>{s.hint}</span>}
-                      {active && s.action && (
+                      {isCurrent && s.hint && <span className="text-serif-sc text-[11px] leading-snug" style={{ color: INK.soft }}>{s.hint}</span>}
+                      {isCurrent && s.action && (
                         <button onClick={s.action.run} className="self-start mt-1 px-3 py-1 text-display text-[13px] uppercase tracking-[.1em] cursor-pointer"
                           style={{ color: "#f3e2bd", background: INK.red, boxShadow: "0 2px 0 rgba(60,18,8,.5)" }}>{s.action.label}</button>
                       )}

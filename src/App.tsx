@@ -549,6 +549,9 @@ export default function App() {
               <Download size={13} className="group-hover:translate-y-px transition-transform" />
               <span className="text-display text-[13px] uppercase tracking-[.1em]">Addon vocale</span>
             </button>
+
+            {/* manutenzione RedM: pulizia cache e fix Vulkan, solo su richiesta del giocatore */}
+            <CacheButtons redmRunning={redmRunning} />
           </Poster>
         </div>
 
@@ -1022,21 +1025,67 @@ function HexCopy({ hex }: { hex: string }) {
 /** Riga "Plugin vocale" nella checklist: stato dell'auto-update di Borderline Voice. */
 function VoicePluginRow({ state, retry }: { state: VoicePlugin; retry: () => void }) {
   const good = state.status === "ok" || state.status === "installed";
+  // Plugin nostro a posto ma YaCA/SaltyChat ancora installati: non blocchiamo (possono essere
+  // gia' disattivati, e non sempre riusciamo a verificarlo), ma lo diciamo al giocatore.
+  const warn = good && (state.conflicts ?? []).length > 0;
   const text =
     state.status === "checking"       ? "…" :
     state.status === "none"           ? "– non pubblicato" :
     state.status === "conflict"       ? `✗ ${(state.conflicts ?? []).join("/") || "plugin"} in conflitto` :
     state.status === "restart_needed" ? "✗ riavvia TeamSpeak" :
     state.status === "error"          ? "✗ non aggiornato" :
+    warn                              ? `⚠ disattiva ${(state.conflicts ?? []).join("/")}` :
     `✓ v${state.version}`;
   return (
     <div className="flex items-center justify-between">
       <span className="text-serif-sc text-[12px] tracking-wide" style={{ color: INK.text }}>Plugin vocale</span>
-      {good
+      {good && !warn
         ? <span className="text-display text-[13px]" style={{ color: INK.green, transform: "rotate(-5deg)", display: "inline-block" }}>{text}</span>
-        : <button onClick={retry} title={state.message ?? "Apri la guida per sistemare l'addon vocale"}
-            className="text-display text-[13px] cursor-pointer hover:opacity-70 transition-opacity" style={{ color: state.status === "checking" || state.status === "none" ? INK.soft : INK.red, transform: "rotate(-5deg)" }}>{text}</button>
+        : <button onClick={retry} title={state.message ?? (warn ? "Vanno solo disattivati in TeamSpeak, non disinstallati: apri la guida" : "Apri la guida per sistemare l'addon vocale")}
+            className="text-display text-[13px] cursor-pointer hover:opacity-70 transition-opacity" style={{ color: warn ? INK.head : state.status === "checking" || state.status === "none" ? INK.soft : INK.red, transform: "rotate(-5deg)" }}>{text}</button>
       }
+    </div>
+  );
+}
+
+/**
+ * Manutenzione RedM: pulizia cache su richiesta del giocatore (vedi `clear_redm_cache`).
+ *   - Pulisci cache  cancella cache, nui-storage, server-cache, server-cache-priv
+ *   - Fix Vulkan     cancella solo i file hints_* (errore Vulkan all'avvio)
+ * Doppio clic di conferma: il primo arma il bottone, il secondo esegue.
+ */
+function CacheButtons({ redmRunning }: { redmRunning: boolean }) {
+  const [armed, setArmed] = useState<"full" | "vulkan" | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  const run = async (mode: "full" | "vulkan") => {
+    if (redmRunning) { setResult("Chiudi RedM prima di pulire la cache."); return; }
+    if (armed !== mode) { setArmed(mode); setResult(null); setTimeout(() => setArmed(a => (a === mode ? null : a)), 5000); return; }
+    setArmed(null); setBusy(true); setResult(null);
+    try {
+      const r = await invoke<{ status: string; removed?: string[]; freed_mb?: number; message?: string }>("clear_redm_cache", { mode });
+      setResult(
+        r.status === "redm_running" ? "Chiudi RedM prima di pulire la cache." :
+        r.status === "error"        ? `Errore: ${r.message || "sconosciuto"}` :
+        (r.removed ?? []).length === 0 ? "Niente da pulire." :
+        `Puliti ${(r.removed ?? []).length} elementi, ${r.freed_mb ?? 0} MB liberati.`,
+      );
+    } catch (e) { setResult(String(e)); }
+    setBusy(false);
+  };
+
+  const label = (mode: "full" | "vulkan", base: string) => (busy ? "…" : armed === mode ? "Confermi?" : base);
+  const btn = "flex-1 py-1 text-display text-[11px] uppercase tracking-[.08em] cursor-pointer transition-opacity hover:opacity-80";
+  return (
+    <div className="mt-2 flex flex-col gap-1">
+      <div className="flex gap-1.5">
+        <button onClick={() => run("full")} disabled={busy} title="Cancella cache, nui-storage, server-cache e server-cache-priv di RedM"
+          className={btn} style={{ color: INK.head, border: `1px solid ${INK.rule}` }}>{label("full", "Pulisci cache")}</button>
+        <button onClick={() => run("vulkan")} disabled={busy} title="Cancella solo i file hints_* : fix dell'errore Vulkan all'avvio"
+          className={btn} style={{ color: INK.head, border: `1px solid ${INK.rule}` }}>{label("vulkan", "Fix Vulkan")}</button>
+      </div>
+      {result && <span className="text-serif-sc text-[10px] leading-snug text-center" style={{ color: INK.soft }}>{result}</span>}
     </div>
   );
 }

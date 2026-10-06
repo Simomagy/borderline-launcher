@@ -38,16 +38,57 @@ fn teamspeak_running() -> bool {
     })
 }
 
-/// Plugin TS3 che usano la stessa porta 30125 o lo stesso protocollo: con uno di questi
-/// installato Borderline Voice non parte. Il launcher guida il giocatore a disinstallarli.
+/// Plugin TS3 che danno fastidio al nostro: YaCA usa la stessa porta 30125, SaltyChat
+/// sposta di canale e muta i client per conto suo. Vanno **disattivati**, mai disinstallati:
+/// la disinstallazione butta via impostazioni e licenza del giocatore.
 const CONFLICTING: [(&str, &str); 2] = [("yaca_win64.dll", "YaCA"), ("SaltyChat_win64.dll", "SaltyChat")];
+
+/// Log piu' recente del client TS3 (uno per avvio).
+fn newest_ts3_log() -> Option<PathBuf> {
+    let dir = std::env::var_os("APPDATA").map(|p| PathBuf::from(p).join(r"TS3Client\logs"))?;
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("ts3client_"))
+        .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
+        .map(|e| e.path())
+}
+
+/// Borderline Voice sta davvero girando in TeamSpeak?
+///
+/// Lo dice il plugin stesso nel log del client: `listening on ws://127.0.0.1:30125` se e'
+/// partito, `cannot bind` se un altro plugin vocale (YaCA) gli ha preso la porta. E' la
+/// verifica di cio' che conta davvero, piu' affidabile che indovinare lo stato
+/// abilitato/disabilitato degli addon dal database di TeamSpeak.
+///
+/// `None` = TS3 chiuso o log muto: non possiamo saperlo, e il launcher si limita ad avvisare.
+fn plugin_active() -> Option<bool> {
+    if !teamspeak_running() {
+        return None;
+    }
+    let bytes = std::fs::read(newest_ts3_log()?).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    for line in text.lines().rev() {
+        if !line.contains("BorderlineVoice") {
+            continue;
+        }
+        if line.contains("listening on ws") {
+            return Some(true);
+        }
+        if line.contains("cannot bind") {
+            return Some(false);
+        }
+    }
+    None
+}
 
 /// Stato ritornato al frontend:
 /// `ok` gia' aggiornato, `installed` appena installato, `restart_needed` scaricato ma TS3
-/// e' aperto, `conflict` c'e' un plugin incompatibile (lista in `conflicts`),
+/// e' aperto, `conflict` il plugin non e' partito perche' un altro gli ha preso la porta,
 /// `none` il manifest non ha `voice_plugin`, `error` con `message`.
-/// Sempre presenti: `conflicts` e `teamspeak_running`, cosi' la guida nel launcher
-/// puo' verificare ogni passo senza altre chiamate.
+/// Sempre presenti: `conflicts` (plugin da disattivare trovati sul disco), `plugin_active`
+/// (true/false/null) e `teamspeak_running`, cosi' la guida nel launcher verifica ogni passo
+/// senza altre chiamate.
 #[tauri::command]
 pub async fn ensure_voice_plugin() -> Value {
     let dir = plugin_dir();
@@ -59,10 +100,14 @@ pub async fn ensure_voice_plugin() -> Value {
         Ok(v) => v,
         Err(e) => json!({ "status": "error", "message": e }),
     };
-    if !conflicts.is_empty() && v["status"] != "error" {
+    let active = plugin_active();
+    // Blocchiamo solo su una prova: il nostro plugin non e' partito. La sola presenza della
+    // DLL di un altro plugin non basta, puo' essere gia' disattivato (e noi non lo vediamo).
+    if active == Some(false) && v["status"] != "error" {
         v["status"] = json!("conflict");
     }
     v["conflicts"] = json!(conflicts);
+    v["plugin_active"] = json!(active);
     v["teamspeak_running"] = json!(teamspeak_running());
     v
 }
@@ -71,7 +116,6 @@ async fn ensure() -> Result<Value, String> {
     let dir = plugin_dir().ok_or("APPDATA non definito")?;
     let dll = dir.join(DLL_NAME);
     let staged = dir.join(format!("{DLL_NAME}.new"));
-    let yaca_present = dir.join("yaca_win64.dll").exists();
     let io = |e: std::io::Error| e.to_string();
 
     // Update rimasto in attesa da una volta precedente: applicalo se TS3 e' chiuso.
@@ -96,7 +140,7 @@ async fn ensure() -> Result<Value, String> {
         .map_err(|e| e.to_string())?;
 
     let Some(vp) = manifest.get("voice_plugin") else {
-        return Ok(json!({ "status": "none", "yaca_present": yaca_present }));
+        return Ok(json!({ "status": "none" }));
     };
     let version = vp["version"].as_str().unwrap_or("?").to_string();
     let url = vp["url"].as_str().ok_or("manifest: voice_plugin senza url")?;
@@ -105,12 +149,12 @@ async fn ensure() -> Result<Value, String> {
     if let Ok(cur) = std::fs::read(&dll) {
         if sha256_hex(&cur) == want {
             let _ = std::fs::remove_file(&staged);
-            return Ok(json!({ "status": "ok", "version": version, "yaca_present": yaca_present }));
+            return Ok(json!({ "status": "ok", "version": version }));
         }
     }
     if let Ok(s) = std::fs::read(&staged) {
         if sha256_hex(&s) == want {
-            return Ok(json!({ "status": "restart_needed", "version": version, "yaca_present": yaca_present }));
+            return Ok(json!({ "status": "restart_needed", "version": version }));
         }
     }
 
@@ -131,8 +175,8 @@ async fn ensure() -> Result<Value, String> {
     std::fs::create_dir_all(&dir).map_err(io)?;
     std::fs::write(&staged, &bytes).map_err(io)?;
     if teamspeak_running() {
-        return Ok(json!({ "status": "restart_needed", "version": version, "yaca_present": yaca_present }));
+        return Ok(json!({ "status": "restart_needed", "version": version }));
     }
     std::fs::rename(&staged, &dll).map_err(io)?;
-    Ok(json!({ "status": "installed", "version": version, "yaca_present": yaca_present }))
+    Ok(json!({ "status": "installed", "version": version }))
 }
