@@ -328,7 +328,7 @@ dependencies = [
 
 [[package]]
 name = "borderline-launcher"
-version = "1.4.5"
+version = "1.4.6"
 dependencies = [
  "discord-rich-presence",
  "hex",
