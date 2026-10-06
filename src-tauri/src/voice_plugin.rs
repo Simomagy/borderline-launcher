@@ -38,11 +38,6 @@ fn teamspeak_running() -> bool {
     })
 }
 
-/// Plugin TS3 che danno fastidio al nostro: YaCA usa la stessa porta 30125, SaltyChat
-/// sposta di canale e muta i client per conto suo. Vanno **disattivati**, mai disinstallati:
-/// la disinstallazione butta via impostazioni e licenza del giocatore.
-const CONFLICTING: [(&str, &str); 2] = [("yaca_win64.dll", "YaCA"), ("SaltyChat_win64.dll", "SaltyChat")];
-
 /// Log piu' recente del client TS3 (uno per avvio).
 fn newest_ts3_log() -> Option<PathBuf> {
     let dir = std::env::var_os("APPDATA").map(|p| PathBuf::from(p).join(r"TS3Client\logs"))?;
@@ -54,32 +49,52 @@ fn newest_ts3_log() -> Option<PathBuf> {
         .map(|e| e.path())
 }
 
-/// Borderline Voice sta davvero girando in TeamSpeak?
+const CONFLICT_TAG: &str = "conflicting plugins loaded:";
+
+/// Cosa dice di se' il plugin nel log del client TeamSpeak:
+///   - `.0` Borderline Voice e' partito: `listening on ws://...` = si', `cannot bind` = no,
+///     gli ha preso la porta un altro plugin vocale.
+///   - `.1` altri plugin vocali **davvero attivi**: il plugin li vede dall'interno del processo
+///     (TS3 scarica dalla memoria quelli disattivati), quindi questa lista distingue
+///     "installato" da "attivo", cosa che il file su disco non puo' dire.
 ///
-/// Lo dice il plugin stesso nel log del client: `listening on ws://127.0.0.1:30125` se e'
-/// partito, `cannot bind` se un altro plugin vocale (YaCA) gli ha preso la porta. E' la
-/// verifica di cio' che conta davvero, piu' affidabile che indovinare lo stato
-/// abilitato/disabilitato degli addon dal database di TeamSpeak.
-///
-/// `None` = TS3 chiuso o log muto: non possiamo saperlo, e il launcher si limita ad avvisare.
-fn plugin_active() -> Option<bool> {
+/// `None` = TS3 chiuso, log muto o plugin troppo vecchio per scriverlo: in quel caso il
+/// launcher non dichiara nessun conflitto, invece di tirare a indovinare.
+fn log_state() -> (Option<bool>, Option<Vec<String>>) {
     if !teamspeak_running() {
-        return None;
+        return (None, None);
     }
-    let bytes = std::fs::read(newest_ts3_log()?).ok()?;
+    let Some(path) = newest_ts3_log() else { return (None, None) };
+    let Ok(bytes) = std::fs::read(path) else { return (None, None) };
     let text = String::from_utf8_lossy(&bytes);
+
+    let (mut active, mut conflicts) = (None, None);
     for line in text.lines().rev() {
         if !line.contains("BorderlineVoice") {
             continue;
         }
-        if line.contains("listening on ws") {
-            return Some(true);
+        if conflicts.is_none() {
+            if let Some(i) = line.find(CONFLICT_TAG) {
+                let list = line[i + CONFLICT_TAG.len()..].trim();
+                conflicts = Some(if list == "none" {
+                    Vec::new()
+                } else {
+                    list.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+                });
+            }
         }
-        if line.contains("cannot bind") {
-            return Some(false);
+        if active.is_none() {
+            if line.contains("listening on ws") {
+                active = Some(true);
+            } else if line.contains("cannot bind") {
+                active = Some(false);
+            }
+        }
+        if active.is_some() && conflicts.is_some() {
+            break;
         }
     }
-    None
+    (active, conflicts)
 }
 
 /// Stato ritornato al frontend:
@@ -91,19 +106,16 @@ fn plugin_active() -> Option<bool> {
 /// senza altre chiamate.
 #[tauri::command]
 pub async fn ensure_voice_plugin() -> Value {
-    let dir = plugin_dir();
-    let conflicts: Vec<&str> = dir
-        .as_ref()
-        .map(|d| CONFLICTING.iter().filter(|(f, _)| d.join(f).exists()).map(|(_, n)| *n).collect())
-        .unwrap_or_default();
     let mut v = match ensure().await {
         Ok(v) => v,
         Err(e) => json!({ "status": "error", "message": e }),
     };
-    let active = plugin_active();
-    // Blocchiamo solo su una prova: il nostro plugin non e' partito. La sola presenza della
-    // DLL di un altro plugin non basta, puo' essere gia' disattivato (e noi non lo vediamo).
-    if active == Some(false) && v["status"] != "error" {
+    let (active, reported) = log_state();
+    let conflicts = reported.unwrap_or_default();
+    // Blocchiamo solo su prove: il nostro plugin non e' partito, oppure un altro plugin vocale
+    // risulta caricato in TeamSpeak adesso. La sola presenza della DLL su disco non conta:
+    // puo' essere gia' disattivata, e segnalarla sembrerebbe un errore nostro.
+    if (active == Some(false) || !conflicts.is_empty()) && v["status"] != "error" {
         v["status"] = json!("conflict");
     }
     v["conflicts"] = json!(conflicts);

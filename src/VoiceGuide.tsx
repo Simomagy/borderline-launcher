@@ -45,13 +45,14 @@ export function VoiceGuideModal({
   const installed = state.status === "ok" || state.status === "installed";
 
   const steps: Step[] = [];
-  if (pluginActive === false) {
+  if (conflicts.length > 0 || pluginActive === false) {
     steps.push({
       title: conflicts.length > 0
         ? `Disattiva ${conflicts.join(" e ")} in TeamSpeak`
         : "Disattiva gli altri plugin vocali in TeamSpeak",
-      hint: "Tools › Options › Addons: porta l'interruttore del plugin su Disabled. Non premere Uninstall, perderesti impostazioni e licenza.",
-      done: false,
+      hint: "Tools › Options › Addons: porta l'interruttore del plugin su Disabled. Non premere Uninstall, perderesti impostazioni e licenza. "
+        + "Vedo da dentro TeamSpeak quali plugin vocali sono davvero attivi, quindi il passo si spunta da solo.",
+      done: conflicts.length === 0 && pluginActive !== false,
       action: tsRunning ? undefined : { label: "Apri TeamSpeak", run: onLaunchTeamspeak },
     });
   }
