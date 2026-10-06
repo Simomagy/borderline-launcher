@@ -748,10 +748,11 @@ export default function App() {
               <button
                 key={link.url}
                 onClick={() => openUrl(link.url)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-bone-200/60 hover:text-gold-300 transition-all cursor-pointer group"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-gold-200/90 hover:text-gold-200 transition-all cursor-pointer group"
+                style={{ textShadow: "0 1px 1px rgba(0,0,0,.7)" }}
               >
-                <span className="text-serif-sc text-[12px] tracking-wide">{link.label}</span>
-                <span className="text-[9px] text-bone-200/30 group-hover:text-gold-400/80 group-hover:translate-x-0.5 transition-all">→</span>
+                <span className="text-serif-sc text-[14px] tracking-wide">{link.label}</span>
+                <span className="text-[11px] text-gold-400/70 group-hover:text-gold-300 group-hover:translate-x-0.5 transition-all">→</span>
               </button>
             ))}
             <span className="w-px h-4 bg-gold-600/25 mx-2" />
