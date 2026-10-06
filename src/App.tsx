@@ -1121,29 +1121,19 @@ function Ts3Copy() {
   return (
     <button
       onClick={copy}
-      title="Copia l'indirizzo del server TeamSpeak"
-      className="group flex items-center justify-center gap-1 mt-1 w-full py-1 cursor-pointer transition-all hover:brightness-[.97]"
+      title={`Copia negli appunti l'indirizzo del server TeamSpeak (${TS3_ADDRESS})`}
+      className="group flex items-center justify-center gap-1.5 mt-2 w-full py-1.5 cursor-pointer transition-all hover:-translate-y-px active:translate-y-0"
       style={{
-        // velatura d'inchiostro che sfuma ai bordi, come le regole di pagina
-        background: copied
-          ? "linear-gradient(90deg, transparent, rgba(74,90,20,.20) 18%, rgba(74,90,20,.20) 82%, transparent)"
-          : "linear-gradient(90deg, transparent, rgba(90,58,20,.16) 18%, rgba(90,58,20,.16) 82%, transparent)",
+        color: copied ? "#f3e2bd" : INK.head,
+        background: copied ? INK.green : "rgba(90,58,20,.14)",
+        border: `1px solid ${copied ? INK.green : INK.rule}`,
+        boxShadow: "0 2px 0 rgba(60,38,14,.25)",
       }}
     >
-      <span className="text-mono text-[7px] uppercase tracking-[.2em]" style={{ color: INK.faint }}>TS3</span>
-      <span
-        className="text-serif-sc text-[11px] tracking-wide"
-        style={{
-          color: copied ? INK.green : INK.head,
-          textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3,
-        }}
-      >
-        {copied ? "indirizzo copiato!" : TS3_ADDRESS}
-      </span>
       {copied
-        ? <Check size={9} style={{ color: INK.green }} />
-        : <Copy size={9} style={{ color: INK.faint }} className="group-hover:opacity-100 opacity-60 transition-opacity" />
-      }
+        ? <Check size={12} />
+        : <Copy size={12} className="opacity-70 group-hover:opacity-100 transition-opacity" />}
+      <span className="text-display text-[13px] uppercase tracking-[.1em]">{copied ? "IP copiato!" : "Copia IP TS3"}</span>
     </button>
   );
 }
