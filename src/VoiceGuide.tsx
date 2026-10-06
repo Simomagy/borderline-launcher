@@ -20,12 +20,12 @@ type Step = { title: string; hint?: string; done: boolean; action?: { label: str
 /**
  * Guida passo-passo per sistemare l'addon vocale. Ogni passo è verificato dal
  * launcher: la guida ripete il controllo ogni 2 s e spunta da sola i passi fatti.
- *   - conflict:       disattiva YaCA/SaltyChat → riavvia TS3 → verifica dal log di TeamSpeak
- *   - restart_needed: chiudi TS3 → (installazione automatica) → riapri TS3
+ *   - conflict:       disattiva il plugin → chiudi TS3 → riapri TS3
+ *   - restart_needed: chiudi TS3 → riapri TS3 (l'installazione è automatica a TS3 chiuso)
  *   - error:          messaggio + riprova
  *
- * Lo stato "disattivato" di un plugin altrui non è leggibile dall'esterno: il passo si
- * spunta quando Borderline Voice riesce finalmente a partire, che è la cosa che conta.
+ * I conflitti arrivano dal nostro plugin, che dall'interno di TeamSpeak vede quali altri
+ * plugin vocali sono davvero caricati: il passo si spunta appena spariscono dalla lista.
  */
 export function VoiceGuideModal({
   state, teamspeakRunning, onRecheck, onLaunchTeamspeak, onClose,
@@ -47,28 +47,20 @@ export function VoiceGuideModal({
   const steps: Step[] = [];
   if (conflicts.length > 0 || pluginActive === false) {
     steps.push({
-      title: conflicts.length > 0
-        ? `Disattiva ${conflicts.join(" e ")} in TeamSpeak`
-        : "Disattiva gli altri plugin vocali in TeamSpeak",
-      hint: "Tools › Options › Addons: porta l'interruttore del plugin su Disabled. Non premere Uninstall, perderesti impostazioni e licenza. "
-        + "Vedo da dentro TeamSpeak quali plugin vocali sono davvero attivi, quindi il passo si spunta da solo.",
+      title: conflicts.length > 0 ? `Disattiva ${conflicts.join(" e ")}` : "Disattiva l'altro plugin vocale",
+      hint: "In TeamSpeak: Tools › Options › Addons, interruttore del plugin su Disabled. Non premere Uninstall.",
       done: conflicts.length === 0 && pluginActive !== false,
       action: tsRunning ? undefined : { label: "Apri TeamSpeak", run: onLaunchTeamspeak },
     });
   }
   steps.push({
     title: "Chiudi TeamSpeak",
-    hint: "Chiudilo del tutto, anche dall'icona vicino all'orologio: finché è aperto la DLL del plugin non si può sostituire.",
+    hint: "Chiudilo del tutto, anche dall'icona vicino all'orologio. Mentre è chiuso installo l'addon aggiornato.",
     done: !tsRunning || (installed && pluginActive !== false),
   });
   steps.push({
-    title: "Installazione di Borderline Voice",
-    hint: "Automatica: parte appena TeamSpeak è chiuso.",
-    done: installed,
-  });
-  steps.push({
     title: "Riapri TeamSpeak",
-    hint: "Al riavvio TeamSpeak carica il plugin aggiornato e io controllo dal log che sia partito.",
+    hint: "Al riavvio carica l'addon e controllo che sia partito.",
     done: installed && tsRunning && pluginActive !== false,
     action: installed && !tsRunning ? { label: "Apri TeamSpeak", run: onLaunchTeamspeak } : undefined,
   });
