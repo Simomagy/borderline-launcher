@@ -565,15 +565,17 @@ export default function App() {
                 </div>
                 <div className="min-w-0">
                   <div className="text-serif-sc text-[13px] leading-tight break-words line-clamp-2" style={{ color: INK.text }} title={steamProfile.name}>{steamProfile.name}</div>
-                  {steamHex && <HexCopy hex={steamHex} />}
                 </div>
               </div>
-            ) : (
+            ) : !steamHex && (
               <div className="flex items-center justify-center gap-2 mt-3 py-1">
                 <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: INK.soft }} />
                 <span className="text-serif-sc text-[11px] tracking-wide" style={{ color: INK.soft }}>Identificazione…</span>
               </div>
             )}
+
+            {/* l'hex non dipende dalla Steam API: serve proprio quando il profilo non arriva */}
+            {steamHex && <HexCopy hex={steamHex} />}
 
             <PaperRule double className="my-3" />
 
@@ -1007,19 +1009,28 @@ function HexCopy({ hex }: { hex: string }) {
     } catch { /* clipboard non disponibile */ }
   };
   return (
-    <button
-      onClick={copy}
-      title="Copia matricola"
-      className="group inline-flex items-center gap-1 mt-0.5 cursor-pointer"
-    >
-      <span className="text-mono text-[8px] tracking-wide" style={{ color: copied ? INK.green : INK.soft }}>
-        {copied ? "copiato!" : `HEX ${hex.slice(0, 6)}…${hex.slice(-4)}`}
-      </span>
-      {copied
-        ? <Check size={9} style={{ color: INK.green }} />
-        : <Copy size={9} style={{ color: INK.faint }} className="group-hover:opacity-100 opacity-60 transition-opacity" />
-      }
-    </button>
+    <div className="mt-3">
+      <div className="flex items-baseline justify-between mb-1">
+        <span className="text-serif-sc text-[11px] tracking-wide" style={{ color: INK.head }}>Steam Hex</span>
+        <span className="text-[10px] italic" style={{ color: INK.soft }}>clicca per copiare</span>
+      </div>
+      <button
+        onClick={copy}
+        title="Copia negli appunti il tuo Steam Hex"
+        className="group flex items-center justify-center gap-1.5 w-full py-1.5 cursor-pointer transition-all hover:-translate-y-px active:translate-y-0"
+        style={{
+          color: copied ? "#f3e2bd" : INK.text,
+          background: copied ? INK.green : "rgba(90,58,20,.14)",
+          border: `1px solid ${copied ? INK.green : INK.rule}`,
+          boxShadow: "0 2px 0 rgba(60,38,14,.25)",
+        }}
+      >
+        {copied ? <Check size={13} /> : <Copy size={13} className="flex-shrink-0 opacity-70 group-hover:opacity-100 transition-opacity" />}
+        {copied
+          ? <span className="text-display text-[13px] uppercase tracking-[.1em]">Copiato!</span>
+          : <span className="text-mono text-[13px]">{hex}</span>}
+      </button>
+    </div>
   );
 }
 
@@ -1176,7 +1187,7 @@ function AccessChip({ status, ban }: { status: AccessStatus; ban: BanInfo | null
     return (
       <div className="flex flex-col gap-1.5 items-center text-center">
         <InkStamp color={INK.red} size={18} rotate={-5}>NON IN LISTA</InkStamp>
-        <p className="text-serif-sc text-[10.5px] leading-snug" style={{ color: INK.text }}>Richiedi l'accesso su Discord.</p>
+        <p className="text-serif-sc text-[10.5px] leading-snug" style={{ color: INK.text }}>Richiedi l'accesso su Discord e incolla il tuo Steam Hex nel ticket.</p>
         <InkLink>→ Apri un ticket su Discord</InkLink>
       </div>
     );
