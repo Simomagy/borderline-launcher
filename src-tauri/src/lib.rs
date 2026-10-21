@@ -61,7 +61,8 @@ fn check_processes() -> serde_json::Value {
 
     for process in sys.processes().values() {
         match process.name().to_string_lossy().to_lowercase().as_str() {
-            "discord.exe" => discord = true,
+            // Discord stable, PTB e Canary
+            "discord.exe" | "discordptb.exe" | "discordcanary.exe" => discord = true,
             "steam.exe"   => steam   = true,
             "redm.exe"    => redm    = true,
             // TeamSpeak 3 (ts3client_win64/32) e TeamSpeak 5 (teamspeak.exe) — backend vocale YACA
