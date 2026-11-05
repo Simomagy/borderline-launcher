@@ -167,6 +167,15 @@ export default function App() {
   // authenticated = challenge del server verificato (client integro e presente).
   const [hbStatus, setHbStatus] = useState<{ authenticated: boolean }>({ authenticated: false });
   const [playError, setPlayError] = useState<string | null>(null);
+  // Server dev (porta 30121): toggle visibile solo se isDevAllowed lo consente.
+  const [devAllowed, setDevAllowed] = useState(false);
+  const [devMode, setDevMode]       = useState(false);
+  const dev = devMode && devAllowed;
+  // Chiusura del pubblico dal launcher: la imposta un Dev, la leggono tutti.
+  // I Dev restano liberi di entrare anche nel pubblico.
+  const [lock, setLock] = useState<{ locked: boolean; reason: string | null }>({ locked: false, reason: null });
+  const [lockReason, setLockReason] = useState("");
+  const publicLocked = lock.locked && !devAllowed;
   // Avviso sull'istanza separata, mostrato prima dell'avvio a chi ha un ban temporaneo.
   const [showExileModal, setShowExileModal] = useState(false);
 
@@ -197,6 +206,15 @@ export default function App() {
     } catch { setServerStatus("offline"); }
   }, []);
 
+  // Fail-open: se la rotta non risponde il launcher non blocca, il blocco
+  // vero lo fa authorize-entry lato bridge.
+  const fetchLock = useCallback(async () => {
+    try {
+      const r = JSON.parse(await invoke<string>("fetch_bridge", { endpoint: "/api/v1/launcherLock" }));
+      if (r.success) setLock({ locked: r.locked === true, reason: r.reason || null });
+    } catch { /* mantieni stato corrente */ }
+  }, []);
+
   // Conteggio aggregato (calcolato dal thread anti-cheat sull'ultimo heartbeat)
   // → Discord Rich Presence. %players = giocatori in-game + launcher aperti.
   // L'heartbeat HTTP non è più qui: lo possiede il thread Rust (scan + challenge).
@@ -215,8 +233,18 @@ export default function App() {
     return { discord, steam, redm, teamspeak };
   }, []);
 
+  // Il controllo vero lo fa il server dev alla connessione: qui serve solo a
+  // non mostrare il toggle a chi non può entrarci.
+  const checkDevAccess = useCallback(async (hex: string) => {
+    try {
+      const r = JSON.parse(await invoke<string>("fetch_bridge", { endpoint: "/api/v1/isDevAllowed", steamHex: hex }));
+      setDevAllowed(r.success === true && r.allowed === true);
+    } catch { /* 429 / challenge Cloudflare: mantieni stato corrente */ }
+  }, []);
+
   const recheckAccess = useCallback(async (hex: string | null) => {
     if (!hex) return;
+    checkDevAccess(hex);
     try {
       const raw = await invoke<string>("check_player_access", { steamHex: hex });
       const r = JSON.parse(raw);
@@ -230,7 +258,7 @@ export default function App() {
         setAccessStatus("not_allowlisted");
       }
     } catch { /* mantieni stato corrente */ }
-  }, []);
+  }, [checkDevAccess]);
 
   // Polling stato anti-cheat (autenticazione challenge + rilevazione dumper).
   const checkHeartbeat = useCallback(async () => {
@@ -290,6 +318,7 @@ export default function App() {
       // Comunica l'identità al thread anti-cheat: da qui parte l'heartbeat
       // (scan dumper + challenge) gestito interamente lato Rust.
       invoke("set_launcher_identity", { steamHex: info.hex }).catch(() => {});
+      checkDevAccess(info.hex);
       setInitLabel("Recupero dati del pioniere");
       const [pr, ar] = await Promise.allSettled([
         invoke<string>("get_steam_profile", { id64: info.id64 }),
@@ -312,12 +341,12 @@ export default function App() {
         } catch { setAccessStatus("error"); }
       } else { setAccessStatus("error"); }
     } catch { setAccessStatus("unknown"); }
-  }, []);
+  }, [checkDevAccess]);
 
   useEffect(() => {
     let poll: ReturnType<typeof setInterval>;
     let tout: ReturnType<typeof setTimeout>;
-    const finish = async () => { await resolveIdentity(); setInitializing(false); fetchHealth(); checkHeartbeat(); };
+    const finish = async () => { await resolveIdentity(); setInitializing(false); fetchHealth(); fetchLock(); checkHeartbeat(); };
     const startup = async () => {
       setInitLabel("Verifica applicazioni");
       const { discord, steam, teamspeak } = await checkProcesses();
@@ -366,16 +395,16 @@ export default function App() {
     checkForUpdates();
     updatePresence();
     checkHeartbeat();
-    const h = setInterval(fetchHealth, 30_000);
+    const h = setInterval(() => { fetchHealth(); fetchLock(); }, 30_000);
     const p = setInterval(checkProcesses, 5_000);
     const a = setInterval(() => recheckAccess(steamHex), 30_000);
     const d = setInterval(updatePresence, 30_000);
     const c = setInterval(checkHeartbeat, 3_000);
     const u = setInterval(() => { checkForUpdates(); checkVoicePlugin(); }, 15 * 60_000); // check updater + plugin vocale ogni 15 min
     let unlisten: (() => void) | undefined;
-    listen("tauri://focus", () => recheckAccess(steamHex)).then(f => { unlisten = f; });
+    listen("tauri://focus", () => { recheckAccess(steamHex); fetchLock(); }).then(f => { unlisten = f; });
     return () => { clearInterval(h); clearInterval(p); clearInterval(a); clearInterval(d); clearInterval(c); clearInterval(u); unlisten?.(); };
-  }, [initializing, fetchHealth, checkProcesses, recheckAccess, steamHex, checkForUpdates, updatePresence, checkHeartbeat]);
+  }, [initializing, fetchHealth, fetchLock, checkProcesses, recheckAccess, steamHex, checkForUpdates, updatePresence, checkHeartbeat]);
 
   useEffect(() => {
     if (initializing) return;
@@ -385,20 +414,27 @@ export default function App() {
     }
   }, [voicePlugin.status, voicePlugin.teamspeak_running, teamspeakRunning, initializing]);
 
+  // Dev: niente health/allowlist/heartbeat del pubblico (isDevAllowed copre
+  // allowlist e ban, il server dev non controlla il launcher).
   const canPlay =
     !redmRunning && !voiceBlocked(voicePlugin.status) &&
-    serverStatus === "online" && steamRunning && teamspeakRunning && discordRunning &&
-    (accessStatus === "allowed" || (accessStatus === "banned" && banInfo?.ban_type === "temporary")) &&
-    hbStatus.authenticated;
+    steamRunning && teamspeakRunning && discordRunning &&
+    (dev || (
+      serverStatus === "online" && !publicLocked &&
+      (accessStatus === "allowed" || (accessStatus === "banned" && banInfo?.ban_type === "temporary")) &&
+      hbStatus.authenticated
+    ));
 
   const playLabel = () => {
     if (redmRunning)                 return "In gioco";
-    if (serverStatus === "loading")  return "Connessione…";
-    if (serverStatus === "offline")  return "Server Offline";
+    if (!dev && serverStatus === "loading")  return "Connessione…";
+    if (!dev && serverStatus === "offline")  return "Server Offline";
+    if (publicLocked)                return "Server chiuso";
     if (!steamRunning)               return "Steam richiesto";
     if (!teamspeakRunning)           return "TeamSpeak richiesto";
     if (!discordRunning)             return "Discord richiesto";
     if (voiceBlocked(voicePlugin.status)) return "Addon vocale da sistemare";
+    if (dev)                         return "Gioca";
     if (accessStatus === "not_allowlisted") return "Accesso Negato";
     if (accessStatus === "banned" && banInfo?.ban_type === "permanent") return "Bannato";
     if (accessStatus === "loading")  return "Verifica…";
@@ -432,6 +468,18 @@ export default function App() {
     // 3) Tutto verificato → avvia RedM.
     invoke("launch_game").catch(e => setPlayError(String(e)));
   }, [steamHex, checkHeartbeat]);
+
+  const toggleLock = useCallback(async () => {
+    if (!steamHex) return;
+    setPlayError(null);
+    const locked = !lock.locked;
+    try {
+      const raw = await invoke<string>("set_launcher_lock", { steamHex, locked, reason: locked ? lockReason.trim() || null : null });
+      const r = JSON.parse(raw);
+      if (!r.success) { setPlayError(r.message || "Operazione negata dal server."); return; }
+      fetchLock();
+    } catch { setPlayError("Impossibile contattare il server. Riprova."); }
+  }, [steamHex, lock.locked, lockReason, fetchLock]);
 
   // ── render ──────────────────────────────────────────────────────────────────
   return (
@@ -584,6 +632,30 @@ export default function App() {
           </Poster>
         </div>
 
+        {/* ── TOP-CENTER — selettore server dev (solo staff abilitato) ── */}
+        {devAllowed && !initializing && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20">
+            <div
+              className="flex flex-col gap-2 px-3 py-2 w-[250px]"
+              style={{ background: "rgba(18,12,8,.78)", border: "1px solid rgba(230,164,92,.28)", animation: "card-in .4s ease both" }}
+            >
+              <DevSwitch label="Dev Server" on={devMode} color={INK.green} onClick={() => { setPlayError(null); setDevMode(v => !v); }} />
+              <DevSwitch label="Chiudi al pubblico" on={lock.locked} color={INK.red} onClick={toggleLock} />
+              {lock.locked ? (
+                lock.reason && <p className="text-serif-sc text-[11px] leading-snug text-bone-200/60 break-words">{lock.reason}</p>
+              ) : (
+                <input
+                  value={lockReason}
+                  onChange={e => setLockReason(e.target.value)}
+                  maxLength={200}
+                  placeholder="Motivazione (opzionale)"
+                  className="w-full select-text bg-black/40 border border-gold-600/30 focus:border-gold-500/60 px-2 py-1 text-[11px] text-bone-200 placeholder:text-bone-200/30 outline-none"
+                />
+              )}
+            </div>
+          </div>
+        )}
+
         {/* ── CENTER HERO ── */}
         <div className="absolute inset-0 flex flex-col items-center justify-center pb-10">
           {initializing ? (
@@ -614,6 +686,7 @@ export default function App() {
                   label={playLabel()}
                   onClick={() => {
                     if (!canPlay || !steamHex) return;
+                    if (dev) { launch("launch_dev_game"); return; }
                     // Ban temporaneo: prima spiega l'istanza separata, si avvia da lì.
                     if (accessStatus === "banned" && banInfo?.ban_type === "temporary") { setShowExileModal(true); return; }
                     startGame();
@@ -621,9 +694,15 @@ export default function App() {
                 />
 
                 {/* hint */}
-                <div className="h-4 flex items-center justify-center">
+                <div className="min-h-4 flex items-center justify-center">
                   {playError ? (
                     <span className="text-mono text-[8px] text-blood-500/80 uppercase tracking-wider">{playError}</span>
+                  ) : publicLocked ? (
+                    <span className="text-serif-sc text-[12px] leading-snug text-center max-w-[460px] text-blood-500/80">
+                      {lock.reason || "Server chiuso al pubblico, riprova più tardi"}
+                    </span>
+                  ) : dev ? (
+                    <span className="text-mono text-[8px] text-gold-400/60 uppercase tracking-wider">Server di sviluppo · porta 30121</span>
                   ) : (
                     <>
                       {accessStatus === "banned" && banInfo?.ban_type === "temporary" && (
@@ -933,6 +1012,27 @@ function SplashScreen({ exiting }: { exiting: boolean }) {
 }
 
 // ── CloseModal ────────────────────────────────────────────────────────────────
+
+function DevSwitch({ label, on, color, onClick }: { label: string; on: boolean; color: string; onClick: () => void }) {
+  return (
+    <div className="flex items-center justify-between gap-2.5">
+      <span className="text-mono text-[9px] uppercase tracking-[.28em] text-gold-400">{label}</span>
+      <button
+        role="switch"
+        aria-checked={on}
+        aria-label={label}
+        onClick={onClick}
+        className="relative w-10 h-5 flex-shrink-0 transition-colors cursor-pointer"
+        style={{ background: on ? color : "rgba(243,226,189,.15)", borderRadius: 9999 }}
+      >
+        <span
+          className="absolute top-0.5 w-4 h-4 rounded-full transition-all duration-200"
+          style={{ left: on ? "calc(100% - 18px)" : 2, background: "#f3e2bd" }}
+        />
+      </button>
+    </div>
+  );
+}
 
 function CloseModal({
   keepInBackground,

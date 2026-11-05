@@ -169,6 +169,13 @@ fn launch_steam() -> Result<(), String> {
 
 #[tauri::command]
 fn launch_game() -> Result<(), String> {
+    spawn_detached("redm://connect/98zy4xb")
+}
+
+/// Server dev (join code cfx, porta 30121). Niente authorize-entry né
+/// heartbeat: il server dev non li controlla e respinge da sé chi non è abilitato.
+#[tauri::command]
+fn launch_dev_game() -> Result<(), String> {
     spawn_detached("redm://connect/rmabxvx")
 }
 
@@ -557,17 +564,7 @@ async fn authorize_entry(
     state: tauri::State<'_, HeartbeatHandle>,
     steam_hex: String,
 ) -> Result<String, String> {
-    // Attendi un nonce valido (il thread heartbeat lo popola ad ogni risposta).
-    // Copre la corsa "GIOCA premuto prima del primo heartbeat".
-    let mut nonce = String::new();
-    for _ in 0..30 {
-        nonce = state.0.lock().map_err(|e| e.to_string())?.nonce.clone();
-        if !nonce.is_empty() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
-    let auth = heartbeat::solve_challenge(LAUNCHER_HMAC_SECRET, &nonce);
+    let auth = challenge_auth(&state).await?;
 
     let url = format!("{}/api/v1/authorize-entry", BRIDGE_URL);
 
@@ -594,10 +591,32 @@ async fn authorize_entry(
         .map_err(|e| e.to_string())
 }
 
-/// GET autenticata a pry-bridge. Il frontend passa solo l'endpoint (es. "/api/v1/health").
+/// Risposta al challenge corrente (HMAC del nonce dell'ultimo heartbeat).
+async fn challenge_auth(state: &HeartbeatHandle) -> Result<String, String> {
+    // Attendi un nonce valido (il thread heartbeat lo popola ad ogni risposta).
+    // Copre la corsa "GIOCA premuto prima del primo heartbeat".
+    let mut nonce = String::new();
+    for _ in 0..30 {
+        nonce = state.0.lock().map_err(|e| e.to_string())?.nonce.clone();
+        if !nonce.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    Ok(heartbeat::solve_challenge(LAUNCHER_HMAC_SECRET, &nonce))
+}
+
+/// POST /api/v1/launcherLock — chiude/riapre il pubblico dal launcher.
+/// Firmata col challenge come authorize-entry; il bridge accetta solo chi ha
+/// il flag Dev (stesso criterio di isDevAllowed).
 #[tauri::command]
-async fn fetch_bridge(endpoint: String) -> Result<String, String> {
-    let url = format!("{}{}", BRIDGE_URL, endpoint);
+async fn set_launcher_lock(
+    state: tauri::State<'_, HeartbeatHandle>,
+    steam_hex: String,
+    locked: bool,
+    reason: Option<String>,
+) -> Result<String, String> {
+    let auth = challenge_auth(&state).await?;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
@@ -606,12 +625,44 @@ async fn fetch_bridge(endpoint: String) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
 
     client
-        .get(&url)
+        .post(format!("{}/api/v1/launcherLock", BRIDGE_URL))
         .header(
             AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {}", BRIDGE_API_KEY))
                 .map_err(|e| e.to_string())?,
         )
+        .header("steam", &steam_hex)
+        .header("auth", &auth)
+        .json(&serde_json::json!({ "locked": locked, "reason": reason }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .text()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// GET autenticata a pry-bridge. Il frontend passa solo l'endpoint (es. "/api/v1/health")
+/// e, per le rotte per-giocatore (es. "/api/v1/isDevAllowed"), lo steam hex.
+#[tauri::command]
+async fn fetch_bridge(endpoint: String, steam_hex: Option<String>) -> Result<String, String> {
+    let url = format!("{}{}", BRIDGE_URL, endpoint);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .user_agent(USER_AGENT)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut req = client.get(&url).header(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {}", BRIDGE_API_KEY))
+            .map_err(|e| e.to_string())?,
+    );
+    if let Some(hex) = &steam_hex {
+        req = req.header("steam", hex);
+    }
+    req
         .send()
         .await
         .map_err(|e| e.to_string())?
@@ -777,6 +828,7 @@ pub fn run() {
             check_processes,
             fetch_bridge,
             launch_game,
+            launch_dev_game,
             launch_discord,
             launch_steam,
             launch_teamspeak,
@@ -784,6 +836,7 @@ pub fn run() {
             get_steam_profile,
             check_player_access,
             authorize_entry,
+            set_launcher_lock,
             set_launcher_identity,
             get_heartbeat_counts,
             get_heartbeat_status,
