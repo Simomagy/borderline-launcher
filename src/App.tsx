@@ -414,15 +414,14 @@ export default function App() {
     }
   }, [voicePlugin.status, voicePlugin.teamspeak_running, teamspeakRunning, initializing]);
 
-  // Dev: niente health/allowlist/heartbeat del pubblico (isDevAllowed copre
-  // allowlist e ban, il server dev non controlla il launcher).
+  // Dev: heartbeat come il pubblico, ma niente health/allowlist del pubblico
+  // (isDevAllowed copre già allowlist e ban).
   const canPlay =
     !redmRunning && !voiceBlocked(voicePlugin.status) &&
-    steamRunning && teamspeakRunning && discordRunning &&
+    steamRunning && teamspeakRunning && discordRunning && hbStatus.authenticated &&
     (dev || (
       serverStatus === "online" && !publicLocked &&
-      (accessStatus === "allowed" || (accessStatus === "banned" && banInfo?.ban_type === "temporary")) &&
-      hbStatus.authenticated
+      (accessStatus === "allowed" || (accessStatus === "banned" && banInfo?.ban_type === "temporary"))
     ));
 
   const playLabel = () => {
@@ -434,7 +433,7 @@ export default function App() {
     if (!teamspeakRunning)           return "TeamSpeak richiesto";
     if (!discordRunning)             return "Discord richiesto";
     if (voiceBlocked(voicePlugin.status)) return "Addon vocale da sistemare";
-    if (dev)                         return "Gioca";
+    if (dev)                         return hbStatus.authenticated ? "Gioca" : "Autenticazione…";
     if (accessStatus === "not_allowlisted") return "Accesso Negato";
     if (accessStatus === "banned" && banInfo?.ban_type === "permanent") return "Bannato";
     if (accessStatus === "loading")  return "Verifica…";
@@ -465,9 +464,9 @@ export default function App() {
       const r = JSON.parse(raw);
       if (!r.success) { setPlayError(r.message || "Autorizzazione negata dal server."); return; }
     } catch { setPlayError("Impossibile contattare il server. Riprova."); return; }
-    // 3) Tutto verificato → avvia RedM.
-    invoke("launch_game").catch(e => setPlayError(String(e)));
-  }, [steamHex, checkHeartbeat]);
+    // 3) Tutto verificato → avvia RedM (pubblico o dev, a seconda del toggle).
+    invoke(dev ? "launch_dev_game" : "launch_game").catch(e => setPlayError(String(e)));
+  }, [steamHex, checkHeartbeat, dev]);
 
   const toggleLock = useCallback(async () => {
     if (!steamHex) return;
@@ -686,7 +685,6 @@ export default function App() {
                   label={playLabel()}
                   onClick={() => {
                     if (!canPlay || !steamHex) return;
-                    if (dev) { launch("launch_dev_game"); return; }
                     // Ban temporaneo: prima spiega l'istanza separata, si avvia da lì.
                     if (accessStatus === "banned" && banInfo?.ban_type === "temporary") { setShowExileModal(true); return; }
                     startGame();

@@ -172,8 +172,8 @@ fn launch_game() -> Result<(), String> {
     spawn_detached("redm://connect/98zy4xb")
 }
 
-/// Server dev (join code cfx, porta 30121). Niente authorize-entry né
-/// heartbeat: il server dev non li controlla e respinge da sé chi non è abilitato.
+/// Server dev (join code cfx, porta 30121). Stesso flusso del pubblico:
+/// il frontend chiama authorize-entry prima di ogni avvio.
 #[tauri::command]
 fn launch_dev_game() -> Result<(), String> {
     spawn_detached("redm://connect/rmabxvx")
