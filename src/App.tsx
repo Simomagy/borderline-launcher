@@ -143,6 +143,7 @@ function LoadingCenter({ label }: { label: string }) {
 
 export default function App() {
   const [serverStatus, setServerStatus] = useState<ServerStatus>("loading");
+  const [serverError, setServerError]   = useState<string | null>(null);
   const [players, setPlayers]           = useState(0);
   const playersRef = useRef(0);
   const [uptime, setUptime]             = useState("--:--");
@@ -202,8 +203,14 @@ export default function App() {
         setPlayers(data.data.system.players);
         playersRef.current = data.data.system.players;
         setUptime(data.data.uptime.slice(0, 5));
-      } else { setServerStatus("offline"); }
-    } catch { setServerStatus("offline"); }
+        setServerError(null);
+      } else { setServerStatus("offline"); setServerError(null); }
+    } catch (e) {
+      // Bridge non raggiunto (rete/Cloudflare): il motivo finisce sotto il bottone,
+      // così uno screenshot basta a distinguerlo da un server davvero spento.
+      setServerStatus("offline");
+      setServerError(String(e));
+    }
   }, []);
 
   // Fail-open: se la rotta non risponde il launcher non blocca, il blocco
@@ -695,6 +702,10 @@ export default function App() {
                 <div className="min-h-4 flex items-center justify-center">
                   {playError ? (
                     <span className="text-mono text-[8px] text-blood-500/80 uppercase tracking-wider">{playError}</span>
+                  ) : !dev && serverStatus === "offline" && serverError ? (
+                    <span className="text-mono text-[8px] text-blood-500/60 tracking-wider text-center max-w-[460px] line-clamp-2 select-text" title={serverError}>
+                      Bridge non raggiunto · {serverError}
+                    </span>
                   ) : publicLocked ? (
                     <span className="text-serif-sc text-[12px] leading-snug text-center max-w-[460px] text-blood-500/80">
                       {lock.reason || "Server chiuso al pubblico, riprova più tardi"}

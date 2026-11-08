@@ -533,13 +533,7 @@ async fn get_steam_profile(id64: String) -> Result<String, String> {
 async fn check_player_access(steam_hex: String) -> Result<String, String> {
     let url = format!("{}/api/v1/isUserAllowlisted", BRIDGE_URL);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    client
+    bridge_client()?
         .get(&url)
         .header(
             AUTHORIZATION,
@@ -568,13 +562,7 @@ async fn authorize_entry(
 
     let url = format!("{}/api/v1/authorize-entry", BRIDGE_URL);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    client
+    bridge_client()?
         .post(&url)
         .header(
             AUTHORIZATION,
@@ -618,13 +606,7 @@ async fn set_launcher_lock(
 ) -> Result<String, String> {
     let auth = challenge_auth(&state).await?;
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    client
+    bridge_client()?
         .post(format!("{}/api/v1/launcherLock", BRIDGE_URL))
         .header(
             AUTHORIZATION,
@@ -648,13 +630,7 @@ async fn set_launcher_lock(
 async fn fetch_bridge(endpoint: String, steam_hex: Option<String>) -> Result<String, String> {
     let url = format!("{}{}", BRIDGE_URL, endpoint);
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let mut req = client.get(&url).header(
+    let mut req = bridge_client()?.get(&url).header(
         AUTHORIZATION,
         HeaderValue::from_str(&format!("Bearer {}", BRIDGE_API_KEY))
             .map_err(|e| e.to_string())?,
@@ -662,13 +638,45 @@ async fn fetch_bridge(endpoint: String, steam_hex: Option<String>) -> Result<Str
     if let Some(hex) = &steam_hex {
         req = req.header("steam", hex);
     }
-    req
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .text()
-        .await
+    let resp = req.send().await.map_err(net_err)?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(net_err)?;
+    // Errore non-JSON = pagina di Cloudflare (blocco/challenge/52x), non del bridge:
+    // riportiamo lo status invece di un "offline" muto. Il JSON d'errore del
+    // bridge passa invariato, i chiamanti lo gestiscono gia'.
+    if !status.is_success() && !text.trim_start().starts_with('{') {
+        return Err(format!("HTTP {status}"));
+    }
+    Ok(text)
+}
+
+/// Il bridge (Cloudflare) ha anche record AAAA: con un IPv6 rotto lato giocatore
+/// la connessione si pianta fino al timeout e il launcher dice "offline" (DNS ok,
+/// WARP ok, CDN solo-IPv4 ok). Legare il socket a 0.0.0.0 fa scartare a hyper
+/// gli indirizzi v6. Usato anche dall'heartbeat.
+pub(crate) const BRIDGE_LOCAL_ADDR: std::net::IpAddr =
+    std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
+
+fn bridge_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .user_agent(USER_AGENT)
+        .local_address(BRIDGE_LOCAL_ADDR)
+        .build()
         .map_err(|e| e.to_string())
+}
+
+/// `reqwest::Error` col suo `Display` dice solo "error sending request": la causa
+/// vera (dns, connect, tls, timeout) sta nella catena `source()`.
+fn net_err(e: reqwest::Error) -> String {
+    let e = e.without_url();
+    let mut s = e.to_string();
+    let mut src = std::error::Error::source(&e);
+    while let Some(c) = src {
+        s.push_str(&format!(": {c}"));
+        src = c.source();
+    }
+    s
 }
 
 /// Comunica al thread anti-cheat lo steam hex risolto dal frontend; da quel
@@ -865,6 +873,7 @@ mod tests {
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(8))
             .user_agent(USER_AGENT)
+            .local_address(BRIDGE_LOCAL_ADDR)
             .build()
             .expect("costruzione client");
 
