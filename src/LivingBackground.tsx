@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
 // ════════════════════════════════════════════════════════════════════════════
-//  SFONDO VIVO — scena fotografica + braci, polvere, fumo, raggio, parallax.
-//  Rimpiazza lo sfondo statico. Si auto-traccia il mouse per il parallax.
+//  SFONDO VIVO — scena fotografica + braci, polvere, fumo, raggio.
+//  Rimpiazza lo sfondo statico.
 // ════════════════════════════════════════════════════════════════════════════
 
 const BANNER = "https://cdn.borderlinerp.com/f/banner-mosqd6hsqkzpdm.png";
@@ -12,6 +12,10 @@ const LB_KEYFRAMES = `
   @keyframes lb-drift-b { 0%{transform:translate(0,0)} 50%{transform:translate(-34px,16px)} 100%{transform:translate(0,0)} }
   @keyframes lb-ray     { 0%,100%{opacity:.08;transform:translateX(0) skewX(-12deg)} 50%{opacity:.22;transform:translateX(26px) skewX(-12deg)} }
 `;
+
+// Le braci si ridisegnano a ~30 fps a prescindere dal refresh del monitor
+// (su un 144/240 Hz il vecchio loop a rAF girava 4 volte più spesso).
+const FRAME_MS = 33;
 
 interface Mote {
   x: number; y: number; r: number; vy: number; vx: number;
@@ -23,27 +27,35 @@ interface Props {
   density?: number;
   /** quanto scurire il centro (per far risaltare l'hero). 0–1. Default .55 */
   centerDark?: number;
+  /** finestra non attiva: il loop delle braci si ferma (le animazioni CSS le ferma App). */
+  paused?: boolean;
 }
 
-export default function LivingBackground({ density = 90, centerDark = 0.55 }: Props) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [par, setPar] = useState({ x: 0, y: 0 });
-  const raf = useRef(0);
+/** Bagliore della brace pre-renderizzato una volta: sostituisce `shadowBlur`, che
+ *  costava un gaussian blur per ogni brace a ogni frame. */
+function emberSprite(): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = c.height = 32;
+  const g = c.getContext("2d")!;
+  const grad = g.createRadialGradient(16, 16, 0, 16, 16, 16);
+  grad.addColorStop(0, "rgba(255,200,120,1)");
+  grad.addColorStop(0.14, "rgba(240,150,70,.9)");
+  grad.addColorStop(0.4, "rgba(230,140,60,.25)");
+  grad.addColorStop(1, "rgba(230,140,60,0)");
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 32, 32);
+  return c;
+}
 
-  // parallax sul movimento del mouse
+export default function LivingBackground({ density = 90, centerDark = 0.55, paused = false }: Props) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const pausedRef = useRef(paused);
+  const wake = useRef<(() => void) | null>(null);
+
   useEffect(() => {
-    const onMove = (e: MouseEvent) => {
-      cancelAnimationFrame(raf.current);
-      raf.current = requestAnimationFrame(() => {
-        setPar({
-          x: e.clientX / window.innerWidth - 0.5,
-          y: e.clientY / window.innerHeight - 0.5,
-        });
-      });
-    };
-    window.addEventListener("mousemove", onMove);
-    return () => { window.removeEventListener("mousemove", onMove); cancelAnimationFrame(raf.current); };
-  }, []);
+    pausedRef.current = paused;
+    if (!paused) wake.current?.();
+  }, [paused]);
 
   // braci + polvere su canvas
   useEffect(() => {
@@ -53,8 +65,8 @@ export default function LivingBackground({ density = 90, centerDark = 0.55 }: Pr
     if (!ctx) return;
     const W = (canvas.width = 1100);
     const H = (canvas.height = 660);
+    const sprite = emberSprite();
 
-    const motes: Mote[] = [];
     const spawn = (initial = false): Mote => {
       const ember = Math.random() > 0.45;
       return {
@@ -68,67 +80,65 @@ export default function LivingBackground({ density = 90, centerDark = 0.55 }: Pr
         ember,
       };
     };
-    for (let i = 0; i < density; i++) motes.push(spawn(true));
+    const motes: Mote[] = Array.from({ length: density }, () => spawn(true));
 
     let id = 0;
     let t = 0;
+    let last = 0;
     const tick = () => {
-      t += 0.016;
+      if (pausedRef.current) { id = 0; return; }
+      const now = performance.now();
+      // dt in "frame a 60 fps": stesse velocità di prima, indipendenti dal frame rate
+      const dt = Math.min((now - last) / 16.67, 4);
+      last = now;
+      t += 0.016 * dt;
       ctx.clearRect(0, 0, W, H);
       for (const m of motes) {
-        m.life += 1;
-        m.y -= m.vy;
-        m.x += m.vx + Math.sin((m.y + t * 30) * 0.01) * 0.3;
+        m.life += dt;
+        m.y -= m.vy * dt;
+        m.x += (m.vx + Math.sin((m.y + t * 30) * 0.01) * 0.3) * dt;
         if (m.y < -10 || m.life > m.max) Object.assign(m, spawn());
-        const fade = Math.min(1, m.life / 40) * (1 - m.life / m.max);
+        const fade = Math.max(0, Math.min(1, m.life / 40) * (1 - m.life / m.max));
         if (m.ember) {
           const flick = 0.7 + Math.sin(t * 6 + m.x) * 0.3;
-          ctx.beginPath();
-          ctx.arc(m.x, m.y, m.r, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${(230 + Math.random() * 25) | 0}, ${(140 + Math.sin(t + m.x) * 30) | 0}, 60, ${fade * flick * 0.9})`;
-          ctx.shadowBlur = 8;
-          ctx.shadowColor = "rgba(230,140,60,.7)";
-          ctx.fill();
+          const s = 14 + m.r * 6;
+          ctx.globalAlpha = fade * flick * 0.9;
+          ctx.drawImage(sprite, m.x - s / 2, m.y - s / 2, s, s);
         } else {
+          ctx.globalAlpha = fade * 0.28;
+          ctx.fillStyle = "rgb(220,205,170)";
           ctx.beginPath();
           ctx.arc(m.x, m.y, m.r, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(220,205,170,${fade * 0.28})`;
-          ctx.shadowBlur = 0;
           ctx.fill();
         }
       }
-      ctx.shadowBlur = 0;
-      id = requestAnimationFrame(tick);
+      ctx.globalAlpha = 1;
+      id = window.setTimeout(tick, FRAME_MS);
     };
-    tick();
-    return () => cancelAnimationFrame(id);
+    wake.current = () => { if (!id) { last = performance.now(); tick(); } };
+    wake.current();
+    return () => { clearTimeout(id); wake.current = null; };
   }, [density]);
 
   return (
     <div className="absolute inset-0 overflow-hidden pointer-events-none" style={{ background: "#0c0805" }}>
       <style>{LB_KEYFRAMES}</style>
 
-      {/* scena con lento zoom + parallax */}
+      {/* scena con lento zoom */}
       <img
         src={BANNER}
         alt=""
         aria-hidden
         className="absolute inset-0 w-full h-full object-cover infinite-zoom"
         onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
-        style={{
-          opacity: 0.52,
-          filter: "sepia(.2) brightness(.66) contrast(1.06)",
-          transform: `scale(1.08) translate(${par.x * -14}px, ${par.y * -14}px)`,
-          transition: "transform .25s ease-out",
-        }}
+        style={{ opacity: 0.52, filter: "sepia(.2) brightness(.66) contrast(1.06)" }}
       />
 
-      {/* raggio di luce diagonale */}
+      {/* raggio di luce diagonale (il gradiente è già sfumato: niente filter blur per frame) */}
       <div
         className="absolute -top-1/4 left-1/3 w-40 h-[150%]"
         style={{
           background: "linear-gradient(90deg, transparent, rgba(230,164,92,.12), transparent)",
-          filter: "blur(22px)",
           animation: "lb-ray 11s ease-in-out infinite",
         }}
       />
@@ -141,7 +151,6 @@ export default function LivingBackground({ density = 90, centerDark = 0.55 }: Pr
           background:
             "radial-gradient(420px 280px at 22% 80%, rgba(40,28,18,.6), transparent 70%), radial-gradient(360px 240px at 80% 28%, rgba(30,20,14,.5), transparent 70%)",
           animation: "lb-drift-a 26s ease-in-out infinite",
-          transform: `translate(${par.x * -24}px, ${par.y * -18}px)`,
         }}
       />
       <div
@@ -150,7 +159,6 @@ export default function LivingBackground({ density = 90, centerDark = 0.55 }: Pr
           inset: "-10%",
           background: "radial-gradient(520px 300px at 60% 92%, rgba(20,14,10,.7), transparent 72%)",
           animation: "lb-drift-b 34s ease-in-out infinite",
-          transform: `translate(${par.x * -8}px, ${par.y * -6}px)`,
         }}
       />
 

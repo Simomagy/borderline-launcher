@@ -69,7 +69,7 @@ export function VoiceGuideModal({
   const current = steps.findIndex(s => !s.done);
 
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(4,3,2,.9)", backdropFilter: "blur(10px)" }}>
+    <div className="absolute inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(4,3,2,.9)" }}>
       <Poster width={470}>
         <div className="flex flex-col gap-4">
           <PaperHeader no="Ufficio del telegrafo" title="Addon vocale" />

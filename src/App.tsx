@@ -5,7 +5,6 @@ import LivingBackground from "./LivingBackground";
 import { Poster, PaperHeader, PaperRule, Star, InkStamp, INK, PAPER_NOISE } from "./western";
 import { VoiceGuideModal, voiceBlocked, type VoicePlugin } from "./VoiceGuide";
 import { Copy, Check, Download, Trash2, Wrench } from "lucide-react";
-import { motion } from "motion/react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -56,6 +55,13 @@ const KEYFRAMES = `
   @keyframes emporio-sweep { 0%{transform:translateX(-100%)} 100%{transform:translateX(420%)} }
   .emporio-shine { left: 0; opacity: 0; transform: translateX(-100%); }
   .emporio-btn:hover .emporio-shine { opacity: 1; animation: emporio-sweep 1.5s linear infinite; }
+  /* titolo: solo transform + opacity → girano sul compositor, niente repaint per frame */
+  @keyframes title-wave { 0%{transform:translateY(0)} 40.6%{transform:translateY(-9px)} 81.25%,100%{transform:translateY(0)} }
+  @keyframes title-glow { 0%{opacity:0} 40.6%{opacity:1} 81.25%,100%{opacity:0} }
+  .title-ch { display:inline-block; position:relative; text-shadow:0 4px 24px rgba(0,0,0,.95); animation: title-wave 3.2s ease-in-out infinite; }
+  .title-ch::after { content:attr(data-ch); position:absolute; inset:0; color:#efbe85; text-shadow:0 0 22px rgba(230,164,92,.75); opacity:0; animation: title-glow 3.2s ease-in-out infinite; animation-delay: inherit; }
+  /* finestra non attiva (sfondo, minimizzata, in tray): tutto fermo → zero frame */
+  [data-idle] *, [data-idle] *::before, [data-idle] *::after { animation-play-state: paused !important; }
 `;
 
 // ── primitivi ─────────────────────────────────────────────────────────────────
@@ -67,8 +73,9 @@ function Diamond({ cls = "" }: { cls?: string }) {
 // ── titolo animato — onda + bagliore dorato che viaggia, loop infinito ──────────
 
 const TITLE_TEXT = "Borderline";
-const TITLE_DARK = "0 4px 24px rgba(0,0,0,.95)";
 
+// Onda + bagliore in CSS (ciclo 2.6 s + 0.6 s di pausa = 3.2 s): il bagliore è
+// un ::after in sovrapposizione di cui si anima solo l'opacità.
 function AnimatedTitle() {
   return (
     <h1
@@ -77,30 +84,9 @@ function AnimatedTitle() {
       style={{ color: "#f3e2bd" }}
     >
       {TITLE_TEXT.split("").map((ch, i) => (
-        <motion.span
-          key={i}
-          aria-hidden
-          className="inline-block"
-          style={{ willChange: "transform" }}
-          animate={{
-            y: [0, -9, 0],
-            color: ["#f3e2bd", "#efbe85", "#f3e2bd"],
-            textShadow: [
-              `${TITLE_DARK}, 0 0 0px rgba(230,164,92,0)`,
-              `${TITLE_DARK}, 0 0 22px rgba(230,164,92,.75)`,
-              `${TITLE_DARK}, 0 0 0px rgba(230,164,92,0)`,
-            ],
-          }}
-          transition={{
-            duration: 2.6,
-            ease: "easeInOut",
-            repeat: Infinity,
-            repeatDelay: 0.6,
-            delay: i * 0.14,
-          }}
-        >
+        <span key={i} aria-hidden data-ch={ch} className="title-ch" style={{ animationDelay: `${i * 0.14}s` }}>
           {ch}
-        </motion.span>
+        </span>
       ))}
     </h1>
   );
@@ -179,6 +165,15 @@ export default function App() {
   const publicLocked = lock.locked && !devAllowed;
   // Avviso sull'istanza separata, mostrato prima dell'avvio a chi ha un ban temporaneo.
   const [showExileModal, setShowExileModal] = useState(false);
+
+  // Finestra attiva = animazioni accese. In sfondo, minimizzata o in tray si
+  // ferma tutto: niente frame da disegnare, WebView2 scende a ~0 CPU/GPU.
+  const [active, setActive] = useState(true);
+  useEffect(() => {
+    win().isFocused().then(setActive).catch(() => {});
+    const un = win().onFocusChanged(({ payload }) => setActive(payload));
+    return () => { un.then(f => f()); };
+  }, []);
 
   const [showSplash, setShowSplash] = useState(true);
   const [splashExiting, setSplashExiting] = useState(false);
@@ -271,7 +266,8 @@ export default function App() {
   const checkHeartbeat = useCallback(async () => {
     try {
       const r = await invoke<{ authenticated: boolean }>("get_heartbeat_status");
-      setHbStatus({ authenticated: !!r.authenticated });
+      // stesso valore → stesso oggetto, così il poll ogni 3 s non ri-renderizza tutta l'app
+      setHbStatus(s => (s.authenticated === !!r.authenticated ? s : { authenticated: !!r.authenticated }));
     } catch { /* mantieni stato corrente */ }
   }, []);
 
@@ -493,6 +489,7 @@ export default function App() {
       className="relative w-[1100px] h-[680px] flex flex-col overflow-hidden select-none"
       style={{ background: "#060402" }}
       data-mood="frontier"
+      data-idle={active ? undefined : ""}
     >
       <style>{KEYFRAMES}</style>
       {showSplash && <SplashScreen exiting={splashExiting} />}
@@ -508,7 +505,7 @@ export default function App() {
       {/* ══ title bar ══ */}
       <header
         className="h-9 shrink-0 flex items-center justify-between px-4 z-30"
-        style={{ background: "#060402", backdropFilter: "blur(14px)" }}
+        style={{ background: "#060402" }}
         data-tauri-drag-region
       >
         <div className="flex items-center gap-2" data-tauri-drag-region>
@@ -537,7 +534,7 @@ export default function App() {
       <div className="flex-1 relative overflow-hidden">
 
         {/* ── SFONDO VIVO — braci, fumo, raggio, parallax (sostituisce lo statico) ── */}
-        <LivingBackground centerDark={canPlay ? 0.42 : 0.6} />
+        <LivingBackground centerDark={canPlay ? 0.42 : 0.6} paused={!active} />
 
         {/* ── TOP-LEFT — bollettino del territorio (server + apps) ── */}
         <div className="absolute top-4 left-5 z-20" style={{ animation: "card-in .4s ease both" }}>
@@ -874,7 +871,7 @@ function UpdateModal({
   return (
     <div
       className="absolute inset-0 z-50 flex items-center justify-center"
-      style={{ background: "rgba(4,3,2,.9)", backdropFilter: "blur(10px)" }}
+      style={{ background: "rgba(4,3,2,.9)" }}
     >
       <Poster width={440}>
         <div className="flex flex-col gap-4">
@@ -945,7 +942,7 @@ function ExileModal({ ban, onConfirm }: { ban: BanInfo | null; onConfirm: () => 
   return (
     <div
       className="absolute inset-0 z-50 flex items-center justify-center"
-      style={{ background: "rgba(4,3,2,.9)", backdropFilter: "blur(10px)" }}
+      style={{ background: "rgba(4,3,2,.9)" }}
     >
       <Poster width={520}>
         <div className="flex flex-col gap-4">
@@ -1057,7 +1054,7 @@ function CloseModal({
   return (
     <div
       className="absolute inset-0 z-50 flex items-center justify-center"
-      style={{ background: "rgba(4,3,2,.9)", backdropFilter: "blur(10px)" }}
+      style={{ background: "rgba(4,3,2,.9)" }}
     >
       <Poster width={420}>
         <div className="flex flex-col gap-4">

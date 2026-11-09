@@ -49,10 +49,12 @@ struct DiscordPresence(Mutex<Option<DiscordIpcClient>>);
 /// Una sola chiamata API invece di tre spawn di tasklist.
 #[tauri::command]
 fn check_processes() -> serde_json::Value {
-    use sysinfo::{ProcessesToUpdate, System};
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 
+    // Solo i nomi: `refresh_processes` di default apre ogni processo per CPU,
+    // memoria, I/O ed exe, ogni 5 s, per poi usarne solo il nome.
     let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, false);
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, false, ProcessRefreshKind::nothing());
 
     let mut discord   = false;
     let mut steam     = false;
@@ -650,18 +652,10 @@ async fn fetch_bridge(endpoint: String, steam_hex: Option<String>) -> Result<Str
     Ok(text)
 }
 
-/// Il bridge (Cloudflare) ha anche record AAAA: con un IPv6 rotto lato giocatore
-/// la connessione si pianta fino al timeout e il launcher dice "offline" (DNS ok,
-/// WARP ok, CDN solo-IPv4 ok). Legare il socket a 0.0.0.0 fa scartare a hyper
-/// gli indirizzi v6. Usato anche dall'heartbeat.
-pub(crate) const BRIDGE_LOCAL_ADDR: std::net::IpAddr =
-    std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
-
 fn bridge_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
         .user_agent(USER_AGENT)
-        .local_address(BRIDGE_LOCAL_ADDR)
         .build()
         .map_err(|e| e.to_string())
 }
@@ -873,7 +867,6 @@ mod tests {
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(8))
             .user_agent(USER_AGENT)
-            .local_address(BRIDGE_LOCAL_ADDR)
             .build()
             .expect("costruzione client");
 

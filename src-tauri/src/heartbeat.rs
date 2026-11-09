@@ -99,7 +99,6 @@ pub fn spawn(handle: HeartbeatHandle) {
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(8))
             .user_agent(crate::USER_AGENT)
-            .local_address(crate::BRIDGE_LOCAL_ADDR)
             .build()
             .ok();
 
