@@ -129,14 +129,14 @@ export default function LivingBackground({ density = 90, centerDark = 0.55, paus
         src={BANNER}
         alt=""
         aria-hidden
-        className="absolute inset-0 w-full h-full object-cover infinite-zoom"
+        className="absolute inset-0 w-full h-full object-cover infinite-zoom loop"
         onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
         style={{ opacity: 0.52, filter: "sepia(.2) brightness(.66) contrast(1.06)" }}
       />
 
       {/* raggio di luce diagonale (il gradiente è già sfumato: niente filter blur per frame) */}
       <div
-        className="absolute -top-1/4 left-1/3 w-40 h-[150%]"
+        className="loop absolute -top-1/4 left-1/3 w-40 h-[150%]"
         style={{
           background: "linear-gradient(90deg, transparent, rgba(230,164,92,.12), transparent)",
           animation: "lb-ray 11s ease-in-out infinite",
@@ -145,7 +145,7 @@ export default function LivingBackground({ density = 90, centerDark = 0.55, paus
 
       {/* fumo / nebbia che deriva */}
       <div
-        className="absolute"
+        className="loop absolute"
         style={{
           inset: "-10%",
           background:
@@ -154,7 +154,7 @@ export default function LivingBackground({ density = 90, centerDark = 0.55, paus
         }}
       />
       <div
-        className="absolute"
+        className="loop absolute"
         style={{
           inset: "-10%",
           background: "radial-gradient(520px 300px at 60% 92%, rgba(20,14,10,.7), transparent 72%)",

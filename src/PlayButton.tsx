@@ -60,7 +60,7 @@ export function PlayButton({ canPlay, label, onClick }: PlayButtonProps) {
       {canPlay && (
         <div className="absolute overflow-hidden" style={{ inset: "7px" }}>
           <span
-            className="absolute inset-y-0 left-0 w-1/4"
+            className="loop absolute inset-y-0 left-0 w-1/4"
             style={{
               background: "linear-gradient(90deg,transparent,rgba(255,255,255,.22),transparent)",
               animation: "shimmer-x 2.6s linear infinite",

@@ -60,8 +60,10 @@ const KEYFRAMES = `
   @keyframes title-glow { 0%{opacity:0} 40.6%{opacity:1} 81.25%,100%{opacity:0} }
   .title-ch { display:inline-block; position:relative; text-shadow:0 4px 24px rgba(0,0,0,.95); animation: title-wave 3.2s ease-in-out infinite; }
   .title-ch::after { content:attr(data-ch); position:absolute; inset:0; color:#efbe85; text-shadow:0 0 22px rgba(230,164,92,.75); opacity:0; animation: title-glow 3.2s ease-in-out infinite; animation-delay: inherit; }
-  /* finestra non attiva (sfondo, minimizzata, in tray): tutto fermo → zero frame */
-  [data-idle] *, [data-idle] *::before, [data-idle] *::after { animation-play-state: paused !important; }
+  /* finestra non attiva (sfondo, minimizzata, in tray): si fermano i loop → zero frame.
+     Solo i loop (classe .loop): le animazioni d'entrata partono da opacity 0 e da
+     ferme lascerebbero pannelli e bottoni invisibili. */
+  [data-idle] .loop, [data-idle] .loop::after, [data-idle] .animate-pulse { animation-play-state: paused !important; }
 `;
 
 // ── primitivi ─────────────────────────────────────────────────────────────────
@@ -84,7 +86,7 @@ function AnimatedTitle() {
       style={{ color: "#f3e2bd" }}
     >
       {TITLE_TEXT.split("").map((ch, i) => (
-        <span key={i} aria-hidden data-ch={ch} className="title-ch" style={{ animationDelay: `${i * 0.14}s` }}>
+        <span key={i} aria-hidden data-ch={ch} className="title-ch loop" style={{ animationDelay: `${i * 0.14}s` }}>
           {ch}
         </span>
       ))}
@@ -111,7 +113,7 @@ function LoadingCenter({ label }: { label: string }) {
     <div className="flex flex-col items-center gap-5">
       <img
         src="https://cdn.borderlinerp.com/f/logo_a_1K-mosqd6j9xt8cd5.png" alt="BorderlineRP"
-        className="h-28 w-auto object-contain drop-shadow-[0_0_36px_rgba(214,138,60,.42)]"
+        className="loop h-28 w-auto object-contain drop-shadow-[0_0_36px_rgba(214,138,60,.42)]"
         style={{ animation: "float 7s ease-in-out infinite" }}
         onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
       />
@@ -516,7 +518,7 @@ export default function App() {
           {updateAvailable && (
             <button
               onClick={() => setShowUpdateModal(true)}
-              className="flex items-center gap-1.5 px-2 py-0.5 border border-gold-600/40 hover:border-gold-500/70 transition-colors cursor-pointer"
+              className="loop flex items-center gap-1.5 px-2 py-0.5 border border-gold-600/40 hover:border-gold-500/70 transition-colors cursor-pointer"
               style={{ background: "rgba(201,161,74,.10)", animation: "emporio-glow 2.5s ease-in-out infinite" }}
             >
               <span className="w-1 h-1 rounded-full bg-gold-400 animate-pulse flex-shrink-0" />
@@ -807,7 +809,7 @@ export default function App() {
           {/* CENTER — EMPORIO (targa incisa in ottone) */}
           <button
             onClick={() => openUrl("https://emporio.borderlinerp.com")}
-            className="emporio-btn group relative overflow-hidden flex items-center gap-3 px-7 py-2 cursor-pointer"
+            className="loop emporio-btn group relative overflow-hidden flex items-center gap-3 px-7 py-2 cursor-pointer"
             style={{
               background: "linear-gradient(180deg, rgba(214,138,60,.22), rgba(120,72,24,.12) 55%, rgba(40,24,10,.2))",
               boxShadow:
@@ -1006,7 +1008,7 @@ function SplashScreen({ exiting }: { exiting: boolean }) {
       <img
         src="https://cdn.borderlinerp.com/f/logo_a_1K-mosqd6j9xt8cd5.png"
         alt="BorderlineRP"
-        className="h-44 w-auto object-contain"
+        className="loop h-44 w-auto object-contain"
         style={{
           filter: "drop-shadow(0 0 56px rgba(214,138,60,.65))",
           animation: "float 7s ease-in-out infinite",
